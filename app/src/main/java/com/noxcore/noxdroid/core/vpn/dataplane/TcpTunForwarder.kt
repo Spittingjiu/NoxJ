@@ -1,24 +1,14 @@
 package com.noxcore.noxdroid.core.vpn.dataplane
 
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import java.io.InputStream
-import java.io.OutputStream
+import com.noxcore.noxdroid.core.connection.NoxTransportClient
 import java.net.InetAddress
-import java.net.InetSocketAddress
-import java.net.Socket
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.random.Random
 
 class TcpTunForwarder(
     private val writeToTun: (ByteArray) -> Unit,
-    private val protectSocket: (Socket) -> Boolean
+    private val transportClient: NoxTransportClient
 ) {
 
     data class ForwardStats(
@@ -29,7 +19,6 @@ class TcpTunForwarder(
         val connectFailures: Long
     )
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessions = linkedMapOf<TcpSessionKey, ForwardSession>()
     private val ipIdCounter = AtomicInteger(Random.nextInt(0, 0xFFFF))
 
@@ -51,7 +40,7 @@ class TcpTunForwarder(
             }
 
             if (packet.rst) {
-                closeSession(session, "client rst")
+                closeSession(session, "client rst", sendCloseFrame = true)
                 return true
             }
 
@@ -61,15 +50,13 @@ class TcpTunForwarder(
                 handled = true
                 val expectedSeq = session.clientNextSeq
                 if (packet.sequenceNumber == expectedSeq) {
-                    try {
-                        session.serverOutput.write(packet.payload)
-                        session.serverOutput.flush()
-                        session.clientNextSeq = add32(session.clientNextSeq, packet.payloadLength)
-                        uplinkBytes += packet.payloadLength.toLong()
-                    } catch (_: Exception) {
-                        closeSession(session, "upstream write failed")
+                    val sent = transportClient.sendData(session.streamId, packet.payload)
+                    if (!sent) {
+                        closeSession(session, "transport write failed", sendCloseFrame = true)
                         return true
                     }
+                    session.clientNextSeq = add32(session.clientNextSeq, packet.payloadLength)
+                    uplinkBytes += packet.payloadLength.toLong()
                 }
                 sendTcp(
                     session = session,
@@ -83,17 +70,16 @@ class TcpTunForwarder(
             if (packet.fin) {
                 handled = true
                 session.clientNextSeq = add32(session.clientNextSeq, 1)
-                try {
-                    session.socket.shutdownOutput()
-                } catch (_: Exception) {
-                }
                 sendTcp(
                     session = session,
                     seq = session.serverSeq,
                     ack = session.clientNextSeq,
-                    flags = FLAG_ACK,
+                    flags = FLAG_ACK or FLAG_FIN,
                     payload = ByteArray(0)
                 )
+                session.serverSeq = add32(session.serverSeq, 1)
+                closeSession(session, "client fin", sendCloseFrame = true)
+                return true
             }
 
             session.lastSeenMs = System.currentTimeMillis()
@@ -119,8 +105,7 @@ class TcpTunForwarder(
             while (iterator.hasNext()) {
                 val session = iterator.next().value
                 if (nowMs - session.lastSeenMs > idleMs) {
-                    session.readerJob.cancel()
-                    closeQuietly(session.socket)
+                    transportClient.closeStream(session.streamId, "idle timeout", sendFrame = true)
                     iterator.remove()
                 }
             }
@@ -130,12 +115,11 @@ class TcpTunForwarder(
     fun stop() {
         synchronized(sessions) {
             sessions.values.forEach { session ->
-                session.readerJob.cancel()
-                closeQuietly(session.socket)
+                transportClient.closeStream(session.streamId, "forwarder stopped", sendFrame = true)
             }
             sessions.clear()
         }
-        scope.cancel()
+        transportClient.close()
     }
 
     private fun handleSyn(packet: TcpPacketMeta): Boolean {
@@ -152,43 +136,31 @@ class TcpTunForwarder(
             return true
         }
 
-        val socket = Socket()
-        if (!protectSocket(socket)) {
-            closeQuietly(socket)
+        val target = "${packet.destinationIp}:${packet.destinationPort}"
+        val openResult = transportClient.openStream(target)
+        if (!openResult.ok) {
             connectFailures += 1
             droppedPackets += 1
-            return false
-        }
-
-        try {
-            socket.tcpNoDelay = true
-            socket.soTimeout = SOCKET_READ_TIMEOUT_MS
-            socket.connect(InetSocketAddress(packet.destinationIp, packet.destinationPort), CONNECT_TIMEOUT_MS)
-        } catch (_: Exception) {
-            closeQuietly(socket)
-            connectFailures += 1
-            droppedPackets += 1
+            Log.w(TAG, "open stream failed for $target: ${openResult.error}")
             return false
         }
 
         val serverIsn = Random.nextInt().toLong() and 0xFFFF_FFFFL
         val session = ForwardSession(
             key = key,
-            socket = socket,
-            serverInput = socket.getInputStream(),
-            serverOutput = socket.getOutputStream(),
+            streamId = openResult.streamId,
             clientNextSeq = add32(packet.sequenceNumber, 1),
             serverSeq = add32(serverIsn, 1),
             serverIsn = serverIsn,
-            lastSeenMs = System.currentTimeMillis(),
-            readerJob = Job()
+            lastSeenMs = System.currentTimeMillis()
         )
 
-        val readerJob = scope.launch {
-            relayServerToTun(session)
-        }
-        session.readerJob = readerJob
         sessions[key] = session
+        transportClient.registerCallbacks(
+            streamId = session.streamId,
+            onData = { data -> onTransportData(session, data) },
+            onClose = { reason -> onTransportClose(session, reason) }
+        )
 
         sendTcp(
             session = session,
@@ -201,65 +173,54 @@ class TcpTunForwarder(
         return true
     }
 
-    private fun relayServerToTun(session: ForwardSession) {
-        val buffer = ByteArray(MAX_RELAY_CHUNK_BYTES)
-        try {
-            while (scope.isActive) {
-                val read = session.serverInput.read(buffer)
-                if (read < 0) {
-                    break
-                }
-                if (read == 0) {
-                    continue
-                }
-
-                val payload = buffer.copyOf(read)
-                synchronized(sessions) {
-                    if (!sessions.containsKey(session.key)) {
-                        return
-                    }
-                    sendTcp(
-                        session = session,
-                        seq = session.serverSeq,
-                        ack = session.clientNextSeq,
-                        flags = FLAG_ACK or FLAG_PSH,
-                        payload = payload
-                    )
-                    session.serverSeq = add32(session.serverSeq, read)
-                    session.lastSeenMs = System.currentTimeMillis()
-                    downlinkBytes += read.toLong()
-                }
+    private fun onTransportData(session: ForwardSession, data: ByteArray) {
+        if (data.isEmpty()) {
+            return
+        }
+        synchronized(sessions) {
+            val current = sessions[session.key] ?: return
+            if (current.streamId != session.streamId) {
+                return
             }
-
-            synchronized(sessions) {
-                if (!sessions.containsKey(session.key)) {
-                    return
-                }
-                sendTcp(
-                    session = session,
-                    seq = session.serverSeq,
-                    ack = session.clientNextSeq,
-                    flags = FLAG_ACK or FLAG_FIN,
-                    payload = ByteArray(0)
-                )
-                session.serverSeq = add32(session.serverSeq, 1)
-                closeSession(session, "upstream eof")
-            }
-        } catch (_: Exception) {
-            synchronized(sessions) {
-                if (!sessions.containsKey(session.key)) {
-                    return
-                }
-                closeSession(session, "upstream read failed")
-            }
+            sendTcp(
+                session = current,
+                seq = current.serverSeq,
+                ack = current.clientNextSeq,
+                flags = FLAG_ACK or FLAG_PSH,
+                payload = data
+            )
+            current.serverSeq = add32(current.serverSeq, data.size)
+            current.lastSeenMs = System.currentTimeMillis()
+            downlinkBytes += data.size.toLong()
         }
     }
 
-    private fun closeSession(session: ForwardSession, reason: String) {
-        session.readerJob.cancel()
-        closeQuietly(session.socket)
+    private fun onTransportClose(session: ForwardSession, reason: String) {
+        synchronized(sessions) {
+            val current = sessions[session.key] ?: return
+            if (current.streamId != session.streamId) {
+                return
+            }
+            sendTcp(
+                session = current,
+                seq = current.serverSeq,
+                ack = current.clientNextSeq,
+                flags = FLAG_ACK or FLAG_FIN,
+                payload = ByteArray(0)
+            )
+            current.serverSeq = add32(current.serverSeq, 1)
+            closeSession(current, "transport close: $reason", sendCloseFrame = false)
+        }
+    }
+
+    private fun closeSession(session: ForwardSession, reason: String, sendCloseFrame: Boolean) {
+        transportClient.closeStream(session.streamId, reason, sendFrame = sendCloseFrame)
         sessions.remove(session.key)
-        Log.d(TAG, "Closed session ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}: $reason")
+        Log.d(
+            TAG,
+            "Closed session ${session.key.clientIp}:${session.key.clientPort} -> " +
+                "${session.key.serverIp}:${session.key.serverPort}: $reason"
+        )
     }
 
     private fun sendTcp(
@@ -388,33 +349,19 @@ class TcpTunForwarder(
         )
     }
 
-    private fun closeQuietly(socket: Socket) {
-        try {
-            socket.close()
-        } catch (_: Exception) {
-        }
-    }
-
     private fun add32(value: Long, delta: Int): Long = (value + delta.toLong()) and 0xFFFF_FFFFL
 
     private data class ForwardSession(
         val key: TcpSessionKey,
-        val socket: Socket,
-        val serverInput: InputStream,
-        val serverOutput: OutputStream,
+        val streamId: Long,
         var clientNextSeq: Long,
         var serverSeq: Long,
         val serverIsn: Long,
-        var lastSeenMs: Long,
-        var readerJob: Job
+        var lastSeenMs: Long
     )
 
     companion object {
         private const val TAG = "TcpTunForwarder"
-
-        private const val CONNECT_TIMEOUT_MS = 5_000
-        private const val SOCKET_READ_TIMEOUT_MS = 30_000
-        private const val MAX_RELAY_CHUNK_BYTES = 4096
         private const val TCP_PROTOCOL = 6
         private const val DEFAULT_TTL = 64
         private const val DEFAULT_WINDOW = 65535

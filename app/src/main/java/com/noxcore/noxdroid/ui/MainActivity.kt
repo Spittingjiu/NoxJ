@@ -12,6 +12,8 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.textfield.TextInputEditText
 import com.noxcore.noxdroid.R
 import com.noxcore.noxdroid.core.connection.ConnectionState
+import com.noxcore.noxdroid.core.connection.NoxClientConfig
+import com.noxcore.noxdroid.core.connection.NoxClientConfigStore
 import com.noxcore.noxdroid.core.connection.SocketConnectionService
 import com.noxcore.noxdroid.core.vpn.NoxVpnService
 import com.noxcore.noxdroid.core.vpn.NoxVpnState
@@ -55,10 +57,17 @@ class MainActivity : AppCompatActivity() {
         statusText = findViewById(R.id.statusText)
         vpnStatusText = findViewById(R.id.vpnStatusText)
 
+        NoxClientConfigStore.load(this)?.let { cfg ->
+            serverEditText.setText(cfg.serverUrl)
+            secretEditText.setText(cfg.sharedSecret)
+            clientIdEditText.setText(cfg.clientId)
+        }
+
         connectButton.setOnClickListener {
             val serverUrl = serverEditText.text?.toString().orEmpty().trim()
             val secret = secretEditText.text?.toString().orEmpty()
             val clientId = clientIdEditText.text?.toString().orEmpty()
+            persistConfig(serverUrl, secret, clientId)
 
             activeJob?.cancel()
             activeJob = lifecycleScope.launch {
@@ -77,7 +86,18 @@ class MainActivity : AppCompatActivity() {
                 is NoxVpnState.RunningForwarding,
                 is NoxVpnState.Starting -> NoxVpnService.stop(this)
 
-                else -> requestAndStartVpn()
+                else -> {
+                    val serverUrl = serverEditText.text?.toString().orEmpty().trim()
+                    val secret = secretEditText.text?.toString().orEmpty()
+                    val clientId = clientIdEditText.text?.toString().orEmpty()
+                    if (!persistConfig(serverUrl, secret, clientId)) {
+                        setVpnStatus(
+                            NoxVpnState.Error("Server URL, shared secret, and client ID are required")
+                        )
+                        return@setOnClickListener
+                    }
+                    requestAndStartVpn()
+                }
             }
         }
 
@@ -166,5 +186,20 @@ class MainActivity : AppCompatActivity() {
                 vpnStatusText.text = getString(R.string.status_vpn_error, state.details)
             }
         }
+    }
+
+    private fun persistConfig(serverUrl: String, secret: String, clientId: String): Boolean {
+        if (serverUrl.isBlank() || secret.isBlank() || clientId.isBlank()) {
+            return false
+        }
+        NoxClientConfigStore.save(
+            this,
+            NoxClientConfig(
+                serverUrl = serverUrl,
+                sharedSecret = secret,
+                clientId = clientId
+            )
+        )
+        return true
     }
 }

@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
 import com.noxcore.noxdroid.R
+import com.noxcore.noxdroid.core.connection.NoxClientConfigStore
 import com.noxcore.noxdroid.core.vpn.dataplane.TunPacketLoop
 import com.noxcore.noxdroid.ui.MainActivity
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -93,7 +94,17 @@ class NoxVpnService : VpnService() {
 
         tunnelFd = tunnel
 
+        val clientConfig = NoxClientConfigStore.load(this)
+        if (clientConfig == null) {
+            updateState(NoxVpnState.Error("Missing Nox transport config. Run handshake with valid fields first."))
+            closeTunnel()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
         val loop = TunPacketLoop(
+            config = clientConfig,
             onStats = { stats ->
                 val runningState = NoxVpnState.RunningForwarding(
                     sessionName = SESSION_NAME,
@@ -145,7 +156,7 @@ class NoxVpnService : VpnService() {
             )
         )
 
-        updateNotification("VPN active. Constrained IPv4/TCP forwarding enabled.")
+        updateNotification("VPN active. Constrained IPv4/TCP via Nox transport open/data/close.")
     }
 
     private fun stopVpn(reason: String) {

@@ -16,18 +16,26 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
 - First real forwarding path is implemented:
   - Real TUN read + write loop
   - IPv4/TCP parse and per-flow session tracking
-  - Constrained user-space TCP forwarder:
+  - Constrained user-space TCP forwarder over Nox transport:
     - accepts outbound client SYN packets from TUN
-    - opens protected upstream socket (`VpnService.protect`) to destination
+    - opens Nox stream (`open`) for destination `ip:port`
+    - forwards uplink payload with Nox `data` frames
+    - consumes Nox downlink `data` frames and injects TCP payload back into TUN
+    - handles stream close via Nox `close` frames
     - synthesizes TCP responses back into TUN (SYN-ACK/ACK/PSH/FIN)
-    - forwards payload uplink/downlink bytes for established sessions
+    - tracks uplink/downlink bytes and connect failures
+  - VPN service now uses saved Nox credentials from UI fields (server URL, shared secret, client ID)
 
 ## Important current limits (honest status)
 - This is not full VPN usability yet.
 - Forwarding is limited to a constrained IPv4/TCP subset.
 - UDP is not forwarded.
 - TCP handling is minimal and does not implement full RFC-grade behavior (retransmission/window management/selective ACK/etc.).
-- Nox transport integration for data plane is not implemented yet; forwarding currently uses direct protected sockets.
+- Nox data-plane support is currently the first honest subset only:
+  - one long-lived WSS transport connection per VPN session
+  - per-flow Nox `open/open_resp/data/close` stream usage
+  - no reconnect/failover yet inside VPN runtime
+  - no H2/H3 transport path in Android client yet
 
 ## HyperOS / modern Android notes
 - VPN runs as a foreground service to survive aggressive background limits.
@@ -50,10 +58,12 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
 ## Project layout
 - `app/src/main/java/com/noxcore/noxdroid/ui/MainActivity.kt`: handshake UI + VPN permission/start/stop flow + forwarding stats display
 - `app/src/main/java/com/noxcore/noxdroid/core/connection/SocketConnectionService.kt`: WSS + Nox `hello`/`hello_ack` handshake probe
+- `app/src/main/java/com/noxcore/noxdroid/core/connection/NoxClientConfigStore.kt`: persistent server/secret/client ID store used by handshake + VPN
+- `app/src/main/java/com/noxcore/noxdroid/core/connection/NoxTransportClient.kt`: long-lived WSS Nox transport client (`hello`, `open/open_resp`, `data`, `close`, `ping/pong`)
 - `app/src/main/java/com/noxcore/noxdroid/core/vpn/NoxVpnService.kt`: foreground `VpnService` + TUN packet loop wiring
 - `app/src/main/java/com/noxcore/noxdroid/core/vpn/NoxVpnState.kt`: VPN runtime state model
 - `app/src/main/java/com/noxcore/noxdroid/core/vpn/dataplane/PacketParser.kt`: minimal IPv4/TCP parser foundation
 - `app/src/main/java/com/noxcore/noxdroid/core/vpn/dataplane/TcpSessionTracker.kt`: TCP flow/session mapping groundwork
-- `app/src/main/java/com/noxcore/noxdroid/core/vpn/dataplane/TcpTunForwarder.kt`: constrained TCP forwarding between TUN and protected upstream sockets
+- `app/src/main/java/com/noxcore/noxdroid/core/vpn/dataplane/TcpTunForwarder.kt`: constrained TCP forwarding between TUN and Nox transport streams
 - `app/src/main/java/com/noxcore/noxdroid/core/vpn/dataplane/TunPacketLoop.kt`: TUN loop + forwarding stats and lifecycle
 - `ROADMAP.md`: next iterations

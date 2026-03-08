@@ -2,6 +2,8 @@ package com.noxcore.noxdroid.core.vpn.dataplane
 
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import com.noxcore.noxdroid.core.connection.NoxClientConfig
+import com.noxcore.noxdroid.core.connection.NoxTransportClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -14,6 +16,7 @@ import java.io.IOException
 import java.net.Socket
 
 class TunPacketLoop(
+    private val config: NoxClientConfig,
     private val onStats: (TunLoopStats) -> Unit,
     private val onError: (String) -> Unit,
     private val protectSocket: (Socket) -> Boolean
@@ -45,10 +48,35 @@ class TunPacketLoop(
         loopJob = scope.launch {
             val input = FileInputStream(tunnelFd.fileDescriptor)
             val output = FileOutputStream(tunnelFd.fileDescriptor)
+            val outputLock = Any()
             val buffer = ByteArray(32767)
-            val forwarder = TcpTunForwarder(
-                writeToTun = { packet -> output.write(packet) },
+            val transportClient = NoxTransportClient(
+                config = config,
                 protectSocket = protectSocket
+            )
+            val connectResult = transportClient.connect()
+            if (connectResult.isFailure) {
+                val reason = connectResult.exceptionOrNull()?.message ?: "transport connect failed"
+                onError("Nox transport connect failed: $reason")
+                try {
+                    input.close()
+                } catch (_: Exception) {
+                }
+                try {
+                    output.close()
+                } catch (_: Exception) {
+                }
+                return@launch
+            }
+
+            val forwarder = TcpTunForwarder(
+                writeToTun = { packet ->
+                    synchronized(outputLock) {
+                        output.write(packet)
+                        output.flush()
+                    }
+                },
+                transportClient = transportClient
             )
 
             var totalPackets = 0L
