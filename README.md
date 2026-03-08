@@ -1,36 +1,34 @@
-# NoxDroid (NoxCore WSS Handshake Tester)
+# NoxDroid (NoxCore WSS Handshake Probe)
 
-Native Kotlin Android client for real NoxCore-style secure WebSocket handshake validation.
+Native Kotlin Android app that validates the current NoxCore WSS handshake behavior.
 
-## What this app does (real)
-- Native Kotlin Android app (Gradle / Android Studio structure)
-- Form fields for:
-  - Server WebSocket URL (`wss://host/path`)
+## What this app does
+- Collects:
+  - Server URL (`wss://host/path`)
   - Shared secret
   - Client ID
-- Runs a real secure WebSocket (`wss`) handshake test
-- Sends a JSON `hello` frame with:
+- Opens a TLS socket to the server.
+- Performs the same HTTP upgrade flow NoxCore uses for WSS (`GET`, `Upgrade: websocket`, `Sec-WebSocket-Key`, `Sec-WebSocket-Protocol: http/1.1`, etc.).
+- After `101 Switching Protocols`, speaks NoxCore control framing directly:
+  - 4-byte big-endian length prefix
+  - UTF-8 JSON envelope: `{ "type": "...", "payload": { ... } }`
+- Sends real NoxCore `hello` payload fields:
   - `client_id`
-  - `timestamp_ms`
-  - `nonce`
-  - HMAC-SHA256 signature (`signature_b64`) over `client_id:timestamp_ms:nonce` using the provided shared secret
-- Waits for and validates a server JSON `hello_ack` frame
-- Reports pass/fail in UI status text with handshake-specific errors
+  - `ts` (Unix seconds)
+  - `nonce` (hex)
+  - `auth = base64(HMAC-SHA256(secret, "hello|client_id|ts|nonce"))`
+- Requires `hello_ack` and validates:
+  - `server_ts`
+  - `server_nonce`
+  - `auth = base64(HMAC-SHA256(secret, "ack|client_id|ts|nonce|server_ts|server_nonce"))`
 
-## What is still missing / not production yet
-- No persistent tunnel, packet forwarding, or VPNService integration yet
-- No full binary protocol/frame layer beyond hello/hello_ack subset
-- If server responds only with binary frames, app reports this as unsupported for now
-- No reconnect manager, heartbeat loop, or background foreground-service lifecycle yet
+## Scope limits
+- This is a handshake/connect probe, not a full tunnel client.
+- `open`/`open_resp`, `data`, `close`, keepalive loops, SOCKS/VPN path, and reconnect manager are not implemented yet.
+- No claim of VPN/proxy functionality in current app state.
 
-## Requirements
-- Android Studio Ladybug+ (or equivalent)
-- Android SDK with API 35 platform
-- JDK 17+
-- Recommended: Gradle 8.7+ (if regenerating wrapper locally)
-
-## Build steps
-1. From project root, ensure wrapper is executable:
+## Build
+1. Ensure wrapper is executable:
    ```bash
    chmod +x gradlew
    ```
@@ -38,22 +36,12 @@ Native Kotlin Android client for real NoxCore-style secure WebSocket handshake v
    ```bash
    ./gradlew :app:assembleDebug
    ```
-3. APK output path:
+3. Output:
    ```
    app/build/outputs/apk/debug/app-debug.apk
    ```
 
-### Environment note
-- This repository includes wrapper scripts and wrapper metadata in Android Studio style.
-- In this container, wrapper execution could not be fully validated due system Gradle packaging limitations and restricted network/bootstrap behavior.
-- On a normal development machine, if wrapper bootstrap fails, run `gradle wrapper --gradle-version 8.7` (with a modern Gradle install) once, then re-run `./gradlew :app:assembleDebug`.
-
-## Run notes (Xiaomi HyperOS / modern Android)
-- Uses only standard Android components and INTERNET permission.
-- Compatible baseline is `minSdk 29` (Android 10+) with `targetSdk 35`.
-- For real always-on tunneling in future versions, HyperOS battery/background limits must be handled with foreground service and user-guided battery exception flow.
-
-## Project structure
-- `app/src/main/java/com/noxcore/noxdroid/ui/MainActivity.kt`: UI + interaction state
-- `app/src/main/java/com/noxcore/noxdroid/core/connection/SocketConnectionService.kt`: real `wss` hello/hello_ack handshake test
-- `ROADMAP.md`: next-phase plan to full mobile client
+## Project layout
+- `app/src/main/java/com/noxcore/noxdroid/ui/MainActivity.kt`: UI + result display
+- `app/src/main/java/com/noxcore/noxdroid/core/connection/SocketConnectionService.kt`: WSS upgrade + Nox `hello`/`hello_ack` framing and auth validation
+- `ROADMAP.md`: planned next steps
