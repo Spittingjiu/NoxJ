@@ -10,7 +10,7 @@
     <string name="action_stop_vpn">Stop VPN</string>
     <string name="status_vpn_idle">VPN idle (not running)</string>
     <string name="status_vpn_starting">VPN starting...</string>
-    <string name="status_vpn_running_capture">VPN active (capture mode). packets=%1$d ipv4=%2$d tcp=%3$d sessions=%4$d last=%5$s. Forwarding not implemented yet.</string>
+    <string name="status_vpn_running_forwarding">VPN active (constrained IPv4/TCP forwarder). packets=%1$d ipv4=%2$d tcp=%3$d forward_sessions=%4$d up=%5$dB down=%6$dB connect_fail=%7$d last=%8$s</string>
     <string name="status_vpn_stopping">VPN stopping...</string>
     <string name="status_vpn_error">VPN error: %1$s</string>
     <string name="status_vpn_permission_denied">VPN permission denied</string>

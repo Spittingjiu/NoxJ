@@ -20,6 +20,10 @@ data class TcpPacketMeta(
     val fin: Boolean,
     val rst: Boolean,
     val payloadLength: Int,
+    val ipHeaderLength: Int,
+    val tcpHeaderLength: Int,
+    val payloadOffset: Int,
+    val payload: ByteArray,
     val summary: String
 )
 
@@ -94,7 +98,13 @@ object PacketParser {
         val fin = flags and 0x01 != 0
         val rst = flags and 0x04 != 0
 
-        val payloadLength = totalLength - tcpOffset - tcpHeaderBytes
+        val payloadOffset = tcpOffset + tcpHeaderBytes
+        val payloadLength = totalLength - payloadOffset
+        val payload = if (payloadLength > 0) {
+            buffer.copyOfRange(payloadOffset, payloadOffset + payloadLength)
+        } else {
+            ByteArray(0)
+        }
 
         val summary =
             "tcp $sourceIp:$sourcePort->$destinationIp:$destinationPort " +
@@ -114,6 +124,10 @@ object PacketParser {
                 fin = fin,
                 rst = rst,
                 payloadLength = payloadLength,
+                ipHeaderLength = ipv4HeaderBytes,
+                tcpHeaderLength = tcpHeaderBytes,
+                payloadOffset = payloadOffset,
+                payload = payload,
                 summary = summary
             )
         )

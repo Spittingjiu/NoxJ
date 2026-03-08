@@ -44,13 +44,18 @@ class NoxVpnService : VpnService() {
     private fun startVpn() {
         if (tunnelFd != null) {
             updateState(
-                NoxVpnState.RunningCapture(
+                NoxVpnState.RunningForwarding(
                     sessionName = SESSION_NAME,
                     totalPackets = 0,
                     malformedPackets = 0,
                     ipv4Packets = 0,
                     tcpPackets = 0,
                     activeTcpSessions = 0,
+                    activeForwardSessions = 0,
+                    uplinkBytes = 0,
+                    downlinkBytes = 0,
+                    droppedForwardPackets = 0,
+                    connectFailures = 0,
                     lastPacketSummary = "already running"
                 )
             )
@@ -90,19 +95,25 @@ class NoxVpnService : VpnService() {
 
         val loop = TunPacketLoop(
             onStats = { stats ->
-                val runningState = NoxVpnState.RunningCapture(
+                val runningState = NoxVpnState.RunningForwarding(
                     sessionName = SESSION_NAME,
                     totalPackets = stats.totalPackets,
                     malformedPackets = stats.malformedPackets,
                     ipv4Packets = stats.ipv4Packets,
                     tcpPackets = stats.tcpPackets,
                     activeTcpSessions = stats.activeTcpSessions,
+                    activeForwardSessions = stats.activeForwardSessions,
+                    uplinkBytes = stats.uplinkBytes,
+                    downlinkBytes = stats.downlinkBytes,
+                    droppedForwardPackets = stats.droppedForwardPackets,
+                    connectFailures = stats.connectFailures,
                     lastPacketSummary = stats.lastPacketSummary
                 )
                 updateState(runningState)
                 updateNotification(
-                    "Capturing packets: tcp=${stats.tcpPackets} sessions=${stats.activeTcpSessions}. " +
-                        "Forwarding not implemented yet."
+                    "Forwarding tcp sessions=${stats.activeForwardSessions} " +
+                        "up=${stats.uplinkBytes}B down=${stats.downlinkBytes}B " +
+                        "connect_fail=${stats.connectFailures}"
                 )
             },
             onError = { reason ->
@@ -110,25 +121,31 @@ class NoxVpnService : VpnService() {
                     updateState(NoxVpnState.Error("TUN loop failed: $reason"))
                     stopVpn("TUN loop failed: $reason")
                 }
-            }
+            },
+            protectSocket = { socket -> protect(socket) }
         )
 
         tunPacketLoop = loop
         loop.start(tunnel)
 
         updateState(
-            NoxVpnState.RunningCapture(
+            NoxVpnState.RunningForwarding(
                 sessionName = SESSION_NAME,
                 totalPackets = 0,
                 malformedPackets = 0,
                 ipv4Packets = 0,
                 tcpPackets = 0,
                 activeTcpSessions = 0,
+                activeForwardSessions = 0,
+                uplinkBytes = 0,
+                downlinkBytes = 0,
+                droppedForwardPackets = 0,
+                connectFailures = 0,
                 lastPacketSummary = "waiting for packets"
             )
         )
 
-        updateNotification("VPN active. Capturing TUN packets (no forwarding yet).")
+        updateNotification("VPN active. Constrained IPv4/TCP forwarding enabled.")
     }
 
     private fun stopVpn(reason: String) {

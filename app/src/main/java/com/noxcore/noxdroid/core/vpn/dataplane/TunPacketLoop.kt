@@ -9,11 +9,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
+import java.net.Socket
 
 class TunPacketLoop(
     private val onStats: (TunLoopStats) -> Unit,
-    private val onError: (String) -> Unit
+    private val onError: (String) -> Unit,
+    private val protectSocket: (Socket) -> Boolean
 ) {
 
     data class TunLoopStats(
@@ -22,6 +25,11 @@ class TunPacketLoop(
         val ipv4Packets: Long,
         val tcpPackets: Long,
         val activeTcpSessions: Int,
+        val activeForwardSessions: Int,
+        val uplinkBytes: Long,
+        val downlinkBytes: Long,
+        val droppedForwardPackets: Long,
+        val connectFailures: Long,
         val lastPacketSummary: String
     )
 
@@ -36,7 +44,12 @@ class TunPacketLoop(
 
         loopJob = scope.launch {
             val input = FileInputStream(tunnelFd.fileDescriptor)
+            val output = FileOutputStream(tunnelFd.fileDescriptor)
             val buffer = ByteArray(32767)
+            val forwarder = TcpTunForwarder(
+                writeToTun = { packet -> output.write(packet) },
+                protectSocket = protectSocket
+            )
 
             var totalPackets = 0L
             var malformedPackets = 0L
@@ -71,7 +84,12 @@ class TunPacketLoop(
                             ipv4Packets += 1
                             tcpPackets += 1
                             tracker.observe(parsed.meta, nowMs)
-                            lastSummary = parsed.meta.summary
+                            val forwarded = forwarder.handleClientPacket(parsed.meta)
+                            lastSummary = if (forwarded) {
+                                "forwarded: ${parsed.meta.summary}"
+                            } else {
+                                parsed.meta.summary
+                            }
                         }
 
                         is ParsedPacket.Malformed -> {
@@ -82,10 +100,12 @@ class TunPacketLoop(
 
                     if (nowMs - lastCleanupMs >= SESSION_CLEANUP_INTERVAL_MS) {
                         tracker.expireClosedAndIdle(nowMs, SESSION_IDLE_TIMEOUT_MS)
+                        forwarder.expireIdle(nowMs, FORWARD_IDLE_TIMEOUT_MS)
                         lastCleanupMs = nowMs
                     }
 
                     if (nowMs - lastStatsEmitMs >= STATS_EMIT_INTERVAL_MS) {
+                        val forwardStats = forwarder.stats()
                         onStats(
                             TunLoopStats(
                                 totalPackets = totalPackets,
@@ -93,6 +113,11 @@ class TunPacketLoop(
                                 ipv4Packets = ipv4Packets,
                                 tcpPackets = tcpPackets,
                                 activeTcpSessions = tracker.activeSessionCount(),
+                                activeForwardSessions = forwardStats.activeForwardSessions,
+                                uplinkBytes = forwardStats.uplinkBytes,
+                                downlinkBytes = forwardStats.downlinkBytes,
+                                droppedForwardPackets = forwardStats.droppedPackets,
+                                connectFailures = forwardStats.connectFailures,
                                 lastPacketSummary = lastSummary
                             )
                         )
@@ -104,11 +129,19 @@ class TunPacketLoop(
                 Log.w(TAG, "TUN read loop stopped: $message")
                 onError(message)
             } finally {
+                forwarder.stop()
+
                 try {
                     input.close()
                 } catch (_: Exception) {
                 }
 
+                try {
+                    output.close()
+                } catch (_: Exception) {
+                }
+
+                val forwardStats = forwarder.stats()
                 onStats(
                     TunLoopStats(
                         totalPackets = totalPackets,
@@ -116,6 +149,11 @@ class TunPacketLoop(
                         ipv4Packets = ipv4Packets,
                         tcpPackets = tcpPackets,
                         activeTcpSessions = tracker.activeSessionCount(),
+                        activeForwardSessions = forwardStats.activeForwardSessions,
+                        uplinkBytes = forwardStats.uplinkBytes,
+                        downlinkBytes = forwardStats.downlinkBytes,
+                        droppedForwardPackets = forwardStats.droppedPackets,
+                        connectFailures = forwardStats.connectFailures,
                         lastPacketSummary = lastSummary
                     )
                 )
@@ -133,5 +171,6 @@ class TunPacketLoop(
         private const val STATS_EMIT_INTERVAL_MS = 1_000L
         private const val SESSION_CLEANUP_INTERVAL_MS = 10_000L
         private const val SESSION_IDLE_TIMEOUT_MS = 60_000L
+        private const val FORWARD_IDLE_TIMEOUT_MS = 60_000L
     }
 }
