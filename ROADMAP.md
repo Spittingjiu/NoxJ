@@ -2,6 +2,7 @@
 
 ## Iteration status (as of 2026-03-08)
 - Handshake tester: implemented and kept functional.
+- Handshake tester reliability: improved by fixing HTTP upgrade request CRLF formatting in probe path.
 - VPN framework: implemented (`VpnService`, permission flow, foreground service, start/stop UI).
 - Data plane step 1: implemented (TUN packet capture loop, IPv4/TCP classification, TCP session mapping groundwork).
 - Data plane step 2: implemented as constrained real forwarding subset:
@@ -12,6 +13,7 @@
   - one protected long-lived WSS Nox control/data socket for VPN session
   - per-flow `open/open_resp/data/close` mapped from constrained TCP forwarder
   - downlink Nox `data` frames injected back as TCP payload to TUN
+  - TCP stream close lifecycle improved to keep sessions alive through basic half-close instead of immediate FIN teardown
   - current implementation is intentionally constrained (no reconnect/failover yet)
 
 ## Next step (priority)
@@ -24,7 +26,7 @@
 - TCP correctness and resilience:
   - retransmission handling improvements
   - better sequence/window/ack behavior
-  - robust FIN/RST/timeout lifecycle coverage
+  - robust FIN/RST/timeout lifecycle coverage beyond current basic half-close handling
 - Protocol coverage:
   - UDP forwarding path
   - DNS handling strategy

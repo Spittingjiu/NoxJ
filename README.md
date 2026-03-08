@@ -7,6 +7,7 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
   - Input fields for `wss://` server URL, shared secret, and client ID
   - Real TLS socket + WebSocket upgrade
   - Real Nox `hello` -> `hello_ack` HMAC validation
+  - Handshake probe now uses correct HTTP CRLF framing for more reliable success/failure reporting
 - Android VPN foundation is implemented:
   - `VpnService` subclass (`NoxVpnService`)
   - System VPN permission flow (`VpnService.prepare(...)`)
@@ -23,6 +24,7 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
     - consumes Nox downlink `data` frames and injects TCP payload back into TUN
     - handles stream close via Nox `close` frames
     - synthesizes TCP responses back into TUN (SYN-ACK/ACK/PSH/FIN)
+    - basic TCP half-close behavior to avoid immediate teardown on first FIN
     - tracks uplink/downlink bytes and connect failures
   - VPN service now uses saved Nox credentials from UI fields (server URL, shared secret, client ID)
 
@@ -31,6 +33,7 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
 - Forwarding is limited to a constrained IPv4/TCP subset.
 - UDP is not forwarded.
 - TCP handling is minimal and does not implement full RFC-grade behavior (retransmission/window management/selective ACK/etc.).
+- TCP close sequencing is improved but still simplified (no full FIN_WAIT/TIME_WAIT state machine).
 - Nox data-plane support is currently the first honest subset only:
   - one long-lived WSS transport connection per VPN session
   - per-flow Nox `open/open_resp/data/close` stream usage

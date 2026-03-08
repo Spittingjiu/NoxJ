@@ -69,16 +69,27 @@ class TcpTunForwarder(
 
             if (packet.fin) {
                 handled = true
-                session.clientNextSeq = add32(session.clientNextSeq, 1)
-                sendTcp(
-                    session = session,
-                    seq = session.serverSeq,
-                    ack = session.clientNextSeq,
-                    flags = FLAG_ACK or FLAG_FIN,
-                    payload = ByteArray(0)
-                )
-                session.serverSeq = add32(session.serverSeq, 1)
-                closeSession(session, "client fin", sendCloseFrame = true)
+                if (!session.clientHalfClosed) {
+                    session.clientHalfClosed = true
+                    session.clientNextSeq = add32(session.clientNextSeq, 1)
+                    sendTcp(
+                        session = session,
+                        seq = session.serverSeq,
+                        ack = session.clientNextSeq,
+                        flags = FLAG_ACK,
+                        payload = ByteArray(0)
+                    )
+                    if (!session.closeFrameSent) {
+                        transportClient.closeStream(session.streamId, "client fin", sendFrame = true)
+                        session.closeFrameSent = true
+                    }
+                }
+            }
+
+            if (packet.ack && session.remoteFinSent &&
+                packet.acknowledgementNumber == session.serverSeq
+            ) {
+                closeSession(session, "client acked remote fin", sendCloseFrame = false)
                 return true
             }
 
@@ -105,7 +116,10 @@ class TcpTunForwarder(
             while (iterator.hasNext()) {
                 val session = iterator.next().value
                 if (nowMs - session.lastSeenMs > idleMs) {
-                    transportClient.closeStream(session.streamId, "idle timeout", sendFrame = true)
+                    if (!session.closeFrameSent) {
+                        transportClient.closeStream(session.streamId, "idle timeout", sendFrame = true)
+                        session.closeFrameSent = true
+                    }
                     iterator.remove()
                 }
             }
@@ -182,6 +196,9 @@ class TcpTunForwarder(
             if (current.streamId != session.streamId) {
                 return
             }
+            if (current.remoteStreamClosed) {
+                return
+            }
             sendTcp(
                 session = current,
                 seq = current.serverSeq,
@@ -201,20 +218,33 @@ class TcpTunForwarder(
             if (current.streamId != session.streamId) {
                 return
             }
-            sendTcp(
-                session = current,
-                seq = current.serverSeq,
-                ack = current.clientNextSeq,
-                flags = FLAG_ACK or FLAG_FIN,
-                payload = ByteArray(0)
-            )
-            current.serverSeq = add32(current.serverSeq, 1)
-            closeSession(current, "transport close: $reason", sendCloseFrame = false)
+            current.remoteStreamClosed = true
+            if (!current.remoteFinSent) {
+                sendTcp(
+                    session = current,
+                    seq = current.serverSeq,
+                    ack = current.clientNextSeq,
+                    flags = FLAG_ACK or FLAG_FIN,
+                    payload = ByteArray(0)
+                )
+                current.serverSeq = add32(current.serverSeq, 1)
+                current.remoteFinSent = true
+            }
+            current.lastSeenMs = System.currentTimeMillis()
+            if (current.clientHalfClosed) {
+                // Preserve a short grace window for the final ACK; cleanup falls back to idle expiry.
+                Log.d(TAG, "Half-closed session awaiting final ACK: ${session.key} reason=$reason")
+            }
         }
     }
 
     private fun closeSession(session: ForwardSession, reason: String, sendCloseFrame: Boolean) {
-        transportClient.closeStream(session.streamId, reason, sendFrame = sendCloseFrame)
+        if (sendCloseFrame && !session.closeFrameSent) {
+            transportClient.closeStream(session.streamId, reason, sendFrame = true)
+            session.closeFrameSent = true
+        } else if (!sendCloseFrame) {
+            transportClient.closeStream(session.streamId, reason, sendFrame = false)
+        }
         sessions.remove(session.key)
         Log.d(
             TAG,
@@ -357,7 +387,11 @@ class TcpTunForwarder(
         var clientNextSeq: Long,
         var serverSeq: Long,
         val serverIsn: Long,
-        var lastSeenMs: Long
+        var lastSeenMs: Long,
+        var clientHalfClosed: Boolean = false,
+        var remoteStreamClosed: Boolean = false,
+        var remoteFinSent: Boolean = false,
+        var closeFrameSent: Boolean = false
     )
 
     companion object {
