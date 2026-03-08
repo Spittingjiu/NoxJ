@@ -292,7 +292,7 @@ class TunPacketLoop(
         private const val STATS_EMIT_INTERVAL_MS = 1_000L
         private const val SESSION_CLEANUP_INTERVAL_MS = 10_000L
         private const val SESSION_IDLE_TIMEOUT_MS = 60_000L
-        private const val FORWARD_IDLE_TIMEOUT_MS = 60_000L
+        private const val FORWARD_IDLE_TIMEOUT_MS = 180_000L
         private const val TRANSPORT_RECONNECT_INTERVAL_MS = 3_000L
         private const val SYN_RECONNECT_INTERVAL_MS = 800L
     }

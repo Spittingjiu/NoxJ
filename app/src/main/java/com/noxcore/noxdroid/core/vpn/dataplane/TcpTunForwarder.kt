@@ -39,10 +39,6 @@ class TcpTunForwarder(
             val key = sessionKey(packet)
             val session = sessions[key] ?: run {
                 droppedPackets += 1
-                val shouldSendRst = !packet.rst && (packet.syn || packet.fin || packet.payloadLength > 0)
-                if (shouldSendRst) {
-                    sendRstForUnknownSession(packet)
-                }
                 return false
             }
 
@@ -59,16 +55,32 @@ class TcpTunForwarder(
                 if (packet.sequenceNumber == expectedSeq) {
                     val sent = transportClient.sendData(session.streamId, packet.payload)
                     if (!sent) {
-                        DiagnosticsLog.warn(
-                            TAG,
-                            "transport write failed stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
-                        )
-                        sendRst(session)
-                        closeSession(session, "transport write failed", sendCloseFrame = true)
-                        return true
+                        val nowMs = System.currentTimeMillis()
+                        session.consecutiveWriteFailures += 1
+                        if (session.firstWriteFailureAtMs == 0L) {
+                            session.firstWriteFailureAtMs = nowMs
+                        }
+                        if (shouldTerminateForWriteFailure(session, nowMs)) {
+                            DiagnosticsLog.warn(
+                                TAG,
+                                "transport write failed terminal stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
+                            )
+                            sendRst(session)
+                            closeSession(session, "transport write failed", sendCloseFrame = true)
+                        } else {
+                            DiagnosticsLog.warn(
+                                TAG,
+                                "transport write failed transient stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
+                            )
+                        }
+                        return false
                     }
+                    session.consecutiveWriteFailures = 0
+                    session.firstWriteFailureAtMs = 0L
                     session.clientNextSeq = add32(session.clientNextSeq, packet.payloadLength)
                     uplinkBytes += packet.payloadLength.toLong()
+                } else {
+                    return false
                 }
                 sendTcp(
                     session = session,
@@ -130,16 +142,16 @@ class TcpTunForwarder(
             }
             val detached = sessions.values.toList()
             detached.forEach { session ->
-                sendRst(session)
-                closeSession(
+                initiateLocalFin(
                     session = session,
                     reason = "transport disconnected: $reason",
+                    closeFrameReason = "transport disconnected: $reason",
                     sendCloseFrame = false
                 )
             }
             DiagnosticsLog.warn(
                 TAG,
-                "transport disconnected; reset ${detached.size} active TCP sessions"
+                "transport disconnected; half-closed ${detached.size} active TCP sessions"
             )
             return detached.size
         }
@@ -151,13 +163,15 @@ class TcpTunForwarder(
             while (iterator.hasNext()) {
                 val session = iterator.next().value
                 val idleDurationMs = nowMs - session.lastSeenMs
-                val timeoutMs = if (session.clientHalfClosed) {
+                val timeoutMs = if (session.remoteFinSent) {
+                    FINAL_ACK_IDLE_TIMEOUT_MS
+                } else if (session.clientHalfClosed) {
                     HALF_CLOSE_IDLE_TIMEOUT_MS
                 } else {
                     idleMs
                 }
                 if (idleDurationMs > timeoutMs) {
-                    if (!session.closeFrameSent) {
+                    if (!session.remoteFinSent) {
                         val reason = if (session.clientHalfClosed) {
                             "client half-close timeout"
                         } else {
@@ -167,9 +181,23 @@ class TcpTunForwarder(
                             TAG,
                             "$reason stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
                         )
-                        sendRst(session)
-                        transportClient.closeStream(session.streamId, reason, sendFrame = true)
+                        initiateLocalFin(
+                            session = session,
+                            reason = reason,
+                            closeFrameReason = reason,
+                            sendCloseFrame = true
+                        )
+                        session.lastSeenMs = nowMs
+                        continue
                     }
+                    if (!session.closeFrameSent) {
+                        transportClient.closeStream(session.streamId, "final ack timeout", sendFrame = false)
+                        session.closeFrameSent = true
+                    }
+                    DiagnosticsLog.info(
+                        TAG,
+                        "final ack timeout stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
+                    )
                     iterator.remove()
                 }
             }
@@ -292,36 +320,49 @@ class TcpTunForwarder(
             if (current.streamId != session.streamId) {
                 return
             }
-            if (isAbruptCloseReason(reason)) {
-                sendRst(current)
-                closeSession(
-                    session = current,
-                    reason = "abrupt transport close: $reason",
-                    sendCloseFrame = false
-                )
-                return
-            }
-            current.remoteStreamClosed = true
-            if (!current.remoteFinSent) {
-                DiagnosticsLog.info(
-                    TAG,
-                    "remote close stream=${current.streamId} ${current.key.serverIp}:${current.key.serverPort} reason=$reason"
-                )
-                sendTcp(
-                    session = current,
-                    seq = current.serverSeq,
-                    ack = current.clientNextSeq,
-                    flags = FLAG_ACK or FLAG_FIN,
-                    payload = ByteArray(0)
-                )
-                current.serverSeq = add32(current.serverSeq, 1)
-                current.remoteFinSent = true
-            }
+            DiagnosticsLog.info(
+                TAG,
+                "remote close stream=${current.streamId} ${current.key.serverIp}:${current.key.serverPort} reason=$reason"
+            )
+            initiateLocalFin(
+                session = current,
+                reason = "remote close: $reason",
+                closeFrameReason = reason,
+                sendCloseFrame = false
+            )
             current.lastSeenMs = System.currentTimeMillis()
             if (current.clientHalfClosed) {
                 // Preserve a short grace window for the final ACK; cleanup falls back to idle expiry.
                 Log.d(TAG, "Half-closed session awaiting final ACK: ${session.key} reason=$reason")
             }
+        }
+    }
+
+    private fun initiateLocalFin(
+        session: ForwardSession,
+        reason: String,
+        closeFrameReason: String,
+        sendCloseFrame: Boolean
+    ) {
+        session.remoteStreamClosed = true
+        if (!session.remoteFinSent) {
+            sendTcp(
+                session = session,
+                seq = session.serverSeq,
+                ack = session.clientNextSeq,
+                flags = FLAG_ACK or FLAG_FIN,
+                payload = ByteArray(0)
+            )
+            session.serverSeq = add32(session.serverSeq, 1)
+            session.remoteFinSent = true
+            DiagnosticsLog.info(
+                TAG,
+                "local FIN stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort} reason=$reason"
+            )
+        }
+        if (!session.closeFrameSent) {
+            transportClient.closeStream(session.streamId, closeFrameReason, sendFrame = sendCloseFrame)
+            session.closeFrameSent = true
         }
     }
 
@@ -343,26 +384,6 @@ class TcpTunForwarder(
         DiagnosticsLog.info(
             TAG,
             "closed stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort} reason=$reason"
-        )
-    }
-
-    private fun sendRstForUnknownSession(packet: TcpPacketMeta) {
-        val ackValue = if (packet.payloadLength > 0 || packet.fin || packet.syn) {
-            add32(packet.sequenceNumber, packet.payloadLength + if (packet.fin || packet.syn) 1 else 0)
-        } else {
-            packet.sequenceNumber
-        }
-        val rstFlags = if (packet.ack) FLAG_RST else FLAG_RST or FLAG_ACK
-        val rstAck = if (packet.ack) 0L else ackValue
-        sendRawTcp(
-            sourceIp = packet.destinationIp,
-            destinationIp = packet.sourceIp,
-            sourcePort = packet.destinationPort,
-            destinationPort = packet.sourcePort,
-            sequenceNumber = if (packet.ack) packet.acknowledgementNumber else 0L,
-            acknowledgementNumber = rstAck,
-            flags = rstFlags,
-            payload = ByteArray(0)
         )
     }
 
@@ -543,12 +564,17 @@ class TcpTunForwarder(
 
     private fun add32(value: Long, delta: Int): Long = (value + delta.toLong()) and 0xFFFF_FFFFL
 
-    private fun isAbruptCloseReason(reason: String): Boolean {
-        val normalized = reason.lowercase()
-        return normalized.contains("transport") ||
-            normalized.contains("failed") ||
-            normalized.contains("timeout") ||
-            normalized.contains("reset")
+    private fun shouldTerminateForWriteFailure(session: ForwardSession, nowMs: Long): Boolean {
+        if (transportClient.isConnected()) {
+            return session.consecutiveWriteFailures >= MAX_CONNECTED_WRITE_FAILURES
+        }
+        val firstFailureMs = session.firstWriteFailureAtMs
+        if (firstFailureMs == 0L) {
+            return false
+        }
+        val failureDurationMs = nowMs - firstFailureMs
+        return session.consecutiveWriteFailures >= MAX_TRANSIENT_WRITE_FAILURES &&
+            failureDurationMs >= TRANSIENT_WRITE_FAILURE_GRACE_MS
     }
 
     private fun isTransientOpenFailure(reason: String): Boolean {
@@ -570,7 +596,9 @@ class TcpTunForwarder(
         var clientHalfClosed: Boolean = false,
         var remoteStreamClosed: Boolean = false,
         var remoteFinSent: Boolean = false,
-        var closeFrameSent: Boolean = false
+        var closeFrameSent: Boolean = false,
+        var consecutiveWriteFailures: Int = 0,
+        var firstWriteFailureAtMs: Long = 0L
     )
 
     companion object {
@@ -579,7 +607,11 @@ class TcpTunForwarder(
         private const val DEFAULT_TTL = 64
         private const val DEFAULT_WINDOW = 65535
         private const val MAX_PAYLOAD_BYTES_PER_PACKET = 1360
-        private const val HALF_CLOSE_IDLE_TIMEOUT_MS = 15_000L
+        private const val HALF_CLOSE_IDLE_TIMEOUT_MS = 60_000L
+        private const val FINAL_ACK_IDLE_TIMEOUT_MS = 120_000L
+        private const val MAX_CONNECTED_WRITE_FAILURES = 3
+        private const val MAX_TRANSIENT_WRITE_FAILURES = 5
+        private const val TRANSIENT_WRITE_FAILURE_GRACE_MS = 6_000L
 
         private const val FLAG_FIN = 0x01
         private const val FLAG_RST = 0x04
