@@ -23,6 +23,9 @@
   - transport continuity hardening:
     - added transport keepalive pings
     - added runtime reconnect attempts inside VPN loop after transport drop
+    - disconnect transitions now actively reset stale forwarded TCP sessions to avoid long post-drop hangs
+    - fail-fast client-side TCP RST synthesis on transport write/abrupt-close failures
+    - reduced per-stream open wait timeout to limit TUN loop stalls on slow/failed opens
   - current implementation is intentionally constrained (basic reconnect for new flows exists; no seamless failover for in-flight flows)
 - Routing safety hardening: implemented for this iteration:
   - removed global `0.0.0.0/0` capture for now

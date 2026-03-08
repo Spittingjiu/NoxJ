@@ -61,6 +61,7 @@ class TunPacketLoop(
             var reconnectAttempts = 0L
             var reconnectSuccesses = 0L
             var lastReconnectAttemptMs = 0L
+            var lastTransportConnected = false
 
             if (!attemptTransportConnect(transportClient, "startup")) {
                 reconnectAttempts += 1
@@ -68,6 +69,7 @@ class TunPacketLoop(
                 DiagnosticsLog.warn(TAG, "startup transport connect failed; VPN loop will keep retrying")
             } else {
                 reconnectSuccesses += 1
+                lastTransportConnected = true
             }
 
             val forwarder = TcpTunForwarder(
@@ -102,6 +104,28 @@ class TunPacketLoop(
                     val parsed = PacketParser.parse(buffer, read)
                     val nowMs = System.currentTimeMillis()
 
+                    var transportConnected = transportClient.isConnected()
+                    if (!transportConnected &&
+                        nowMs - lastReconnectAttemptMs >= TRANSPORT_RECONNECT_INTERVAL_MS
+                    ) {
+                        reconnectAttempts += 1
+                        lastReconnectAttemptMs = nowMs
+                        val connected = attemptTransportConnect(transportClient, "runtime")
+                        if (connected) {
+                            reconnectSuccesses += 1
+                            transportConnected = true
+                        }
+                    }
+                    if (!lastTransportConnected && transportConnected) {
+                        DiagnosticsLog.info(TAG, "transport continuity restored")
+                    } else if (lastTransportConnected && !transportConnected) {
+                        val resetCount = forwarder.handleTransportDisconnect("transport unavailable")
+                        if (resetCount > 0) {
+                            lastSummary = "transport down: reset $resetCount sessions"
+                        }
+                    }
+                    lastTransportConnected = transportConnected
+
                     when (parsed) {
                         is ParsedPacket.NonIpv4 -> {
                             lastSummary = parsed.meta.summary
@@ -127,17 +151,6 @@ class TunPacketLoop(
                         is ParsedPacket.Malformed -> {
                             malformedPackets += 1
                             lastSummary = "malformed: ${parsed.reason}"
-                        }
-                    }
-
-                    if (!transportClient.isConnected() &&
-                        nowMs - lastReconnectAttemptMs >= TRANSPORT_RECONNECT_INTERVAL_MS
-                    ) {
-                        reconnectAttempts += 1
-                        lastReconnectAttemptMs = nowMs
-                        val connected = attemptTransportConnect(transportClient, "runtime")
-                        if (connected) {
-                            reconnectSuccesses += 1
                         }
                     }
 

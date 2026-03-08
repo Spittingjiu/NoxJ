@@ -32,7 +32,10 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
     - improved TCP half-close handling to avoid prematurely closing upstream stream on client FIN
     - downlink TCP payload segmentation (smaller injected packets instead of oversized single writes)
     - TCP RST synthesis for failed stream opens / unknown sessions so client sockets fail fast instead of hanging
+    - fail-fast TCP RST teardown when transport write/close errors occur (avoids long hangs on broken streams)
+    - active session reset on transport-down transition so stale sessions do not linger after disconnects
     - runtime transport reconnect attempts inside VPN loop after disconnects
+    - reconnect attempts now run before packet forwarding work and stream-open timeout is shorter to reduce "stuck open" stalls
     - transport keepalive pings to reduce idle control/data socket drops on mobile networks
     - tracks uplink/downlink bytes and connect failures
   - VPN service now uses saved Nox credentials from UI fields (server URL, shared secret, client ID)

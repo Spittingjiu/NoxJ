@@ -61,6 +61,7 @@ class TcpTunForwarder(
                             TAG,
                             "transport write failed stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
                         )
+                        sendRst(session)
                         closeSession(session, "transport write failed", sendCloseFrame = true)
                         return true
                     }
@@ -119,6 +120,28 @@ class TcpTunForwarder(
         }
     }
 
+    fun handleTransportDisconnect(reason: String): Int {
+        synchronized(sessions) {
+            if (sessions.isEmpty()) {
+                return 0
+            }
+            val detached = sessions.values.toList()
+            detached.forEach { session ->
+                sendRst(session)
+                closeSession(
+                    session = session,
+                    reason = "transport disconnected: $reason",
+                    sendCloseFrame = false
+                )
+            }
+            DiagnosticsLog.warn(
+                TAG,
+                "transport disconnected; reset ${detached.size} active TCP sessions"
+            )
+            return detached.size
+        }
+    }
+
     fun expireIdle(nowMs: Long, idleMs: Long) {
         synchronized(sessions) {
             val iterator = sessions.entries.iterator()
@@ -141,8 +164,8 @@ class TcpTunForwarder(
                             TAG,
                             "$reason stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
                         )
+                        sendRst(session)
                         transportClient.closeStream(session.streamId, reason, sendFrame = true)
-                        session.closeFrameSent = true
                     }
                     iterator.remove()
                 }
@@ -258,6 +281,15 @@ class TcpTunForwarder(
             if (current.streamId != session.streamId) {
                 return
             }
+            if (isAbruptCloseReason(reason)) {
+                sendRst(current)
+                closeSession(
+                    session = current,
+                    reason = "abrupt transport close: $reason",
+                    sendCloseFrame = false
+                )
+                return
+            }
             current.remoteStreamClosed = true
             if (!current.remoteFinSent) {
                 DiagnosticsLog.info(
@@ -283,10 +315,12 @@ class TcpTunForwarder(
     }
 
     private fun closeSession(session: ForwardSession, reason: String, sendCloseFrame: Boolean) {
-        if (sendCloseFrame && !session.closeFrameSent) {
-            transportClient.closeStream(session.streamId, reason, sendFrame = true)
-            session.closeFrameSent = true
-        } else if (!sendCloseFrame) {
+        if (sendCloseFrame) {
+            if (!session.closeFrameSent) {
+                transportClient.closeStream(session.streamId, reason, sendFrame = true)
+                session.closeFrameSent = true
+            }
+        } else {
             transportClient.closeStream(session.streamId, reason, sendFrame = false)
         }
         sessions.remove(session.key)
@@ -329,6 +363,19 @@ class TcpTunForwarder(
             destinationPort = packet.sourcePort,
             sequenceNumber = 0L,
             acknowledgementNumber = add32(packet.sequenceNumber, 1),
+            flags = FLAG_RST or FLAG_ACK,
+            payload = ByteArray(0)
+        )
+    }
+
+    private fun sendRst(session: ForwardSession) {
+        sendRawTcp(
+            sourceIp = session.key.serverIp,
+            destinationIp = session.key.clientIp,
+            sourcePort = session.key.serverPort,
+            destinationPort = session.key.clientPort,
+            sequenceNumber = session.serverSeq,
+            acknowledgementNumber = session.clientNextSeq,
             flags = FLAG_RST or FLAG_ACK,
             payload = ByteArray(0)
         )
@@ -484,6 +531,14 @@ class TcpTunForwarder(
     }
 
     private fun add32(value: Long, delta: Int): Long = (value + delta.toLong()) and 0xFFFF_FFFFL
+
+    private fun isAbruptCloseReason(reason: String): Boolean {
+        val normalized = reason.lowercase()
+        return normalized.contains("transport") ||
+            normalized.contains("failed") ||
+            normalized.contains("timeout") ||
+            normalized.contains("reset")
+    }
 
     private data class ForwardSession(
         val key: TcpSessionKey,
