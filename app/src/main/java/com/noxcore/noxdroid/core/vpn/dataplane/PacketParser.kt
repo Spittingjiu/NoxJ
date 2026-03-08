@@ -27,9 +27,21 @@ data class TcpPacketMeta(
     val summary: String
 )
 
+data class UdpPacketMeta(
+    val byteCount: Int,
+    val sourceIp: String,
+    val destinationIp: String,
+    val sourcePort: Int,
+    val destinationPort: Int,
+    val ipHeaderLength: Int,
+    val udpLength: Int,
+    val summary: String
+)
+
 sealed class ParsedPacket {
     data class NonIpv4(val meta: PacketMeta) : ParsedPacket()
     data class Ipv4NonTcp(val meta: PacketMeta, val protocol: Int) : ParsedPacket()
+    data class Ipv4Udp(val meta: UdpPacketMeta) : ParsedPacket()
     data class Ipv4Tcp(val meta: TcpPacketMeta) : ParsedPacket()
     data class Malformed(val reason: String) : ParsedPacket()
 }
@@ -66,6 +78,31 @@ object PacketParser {
         val protocol = u8(buffer, 9)
         val sourceIp = ipv4(buffer, 12)
         val destinationIp = ipv4(buffer, 16)
+
+        if (protocol == UDP_PROTOCOL_NUMBER) {
+            val udpOffset = ipv4HeaderBytes
+            if (totalLength < udpOffset + UDP_HEADER_BYTES) {
+                return ParsedPacket.Malformed("short udp header")
+            }
+            val sourcePort = u16(buffer, udpOffset)
+            val destinationPort = u16(buffer, udpOffset + 2)
+            val udpLength = u16(buffer, udpOffset + 4)
+            if (udpLength < UDP_HEADER_BYTES || udpOffset + udpLength > totalLength) {
+                return ParsedPacket.Malformed("invalid udp length=$udpLength")
+            }
+            return ParsedPacket.Ipv4Udp(
+                UdpPacketMeta(
+                    byteCount = totalLength,
+                    sourceIp = sourceIp,
+                    destinationIp = destinationIp,
+                    sourcePort = sourcePort,
+                    destinationPort = destinationPort,
+                    ipHeaderLength = ipv4HeaderBytes,
+                    udpLength = udpLength,
+                    summary = "udp $sourceIp:$sourcePort->$destinationIp:$destinationPort len=$udpLength"
+                )
+            )
+        }
 
         if (protocol != TCP_PROTOCOL_NUMBER) {
             return ParsedPacket.Ipv4NonTcp(
@@ -161,5 +198,7 @@ object PacketParser {
     private const val IPV4_VERSION = 4
     private const val IPV4_MIN_HEADER_BYTES = 20
     private const val TCP_MIN_HEADER_BYTES = 20
+    private const val UDP_HEADER_BYTES = 8
     private const val TCP_PROTOCOL_NUMBER = 6
+    private const val UDP_PROTOCOL_NUMBER = 17
 }

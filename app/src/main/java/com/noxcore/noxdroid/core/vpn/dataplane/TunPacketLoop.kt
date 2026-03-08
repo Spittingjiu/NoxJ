@@ -38,6 +38,7 @@ class TunPacketLoop(
         val droppedForwardPackets: Long,
         val connectFailures: Long,
         val transientOpenDeferrals: Long,
+        val quicFallbackSignals: Long,
         val lastPacketSummary: String
     )
 
@@ -94,6 +95,8 @@ class TunPacketLoop(
             var lastLoggedConnectFailures = 0L
             var lastLoggedDroppedPackets = 0L
             var lastLoggedOpenDeferrals = 0L
+            var quicFallbackSignals = 0L
+            var lastLoggedQuicFallbackSignals = 0L
 
             try {
                 while (isActive) {
@@ -150,6 +153,31 @@ class TunPacketLoop(
                             lastSummary = parsed.meta.summary
                         }
 
+                        is ParsedPacket.Ipv4Udp -> {
+                            ipv4Packets += 1
+                            if (parsed.meta.destinationPort == HTTPS_PORT) {
+                                val sent = sendUdpPortUnreachable(
+                                    originalPacket = buffer,
+                                    originalLength = read,
+                                    meta = parsed.meta,
+                                    writeToTun = { packet ->
+                                        synchronized(outputLock) {
+                                            output.write(packet)
+                                            output.flush()
+                                        }
+                                    }
+                                )
+                                if (sent) {
+                                    quicFallbackSignals += 1
+                                    lastSummary = "udp/443 fallback signaled: ${parsed.meta.summary}"
+                                } else {
+                                    lastSummary = "udp/443 fallback signal failed: ${parsed.meta.summary}"
+                                }
+                            } else {
+                                lastSummary = parsed.meta.summary
+                            }
+                        }
+
                         is ParsedPacket.Ipv4Tcp -> {
                             ipv4Packets += 1
                             tcpPackets += 1
@@ -197,6 +225,13 @@ class TunPacketLoop(
                             )
                             lastLoggedOpenDeferrals = forwardStats.transientOpenDeferrals
                         }
+                        if (quicFallbackSignals >= lastLoggedQuicFallbackSignals + 10L) {
+                            DiagnosticsLog.info(
+                                TAG,
+                                "youtube-first udp/443 fallback signals=$quicFallbackSignals last=$lastSummary"
+                            )
+                            lastLoggedQuicFallbackSignals = quicFallbackSignals
+                        }
                         onStats(
                             TunLoopStats(
                                 totalPackets = totalPackets,
@@ -213,6 +248,7 @@ class TunPacketLoop(
                                 droppedForwardPackets = forwardStats.droppedPackets,
                                 connectFailures = forwardStats.connectFailures,
                                 transientOpenDeferrals = forwardStats.transientOpenDeferrals,
+                                quicFallbackSignals = quicFallbackSignals,
                                 lastPacketSummary = lastSummary
                             )
                         )
@@ -257,6 +293,7 @@ class TunPacketLoop(
                         droppedForwardPackets = forwardStats.droppedPackets,
                         connectFailures = forwardStats.connectFailures,
                         transientOpenDeferrals = forwardStats.transientOpenDeferrals,
+                        quicFallbackSignals = quicFallbackSignals,
                         lastPacketSummary = lastSummary
                     )
                 )
@@ -296,6 +333,92 @@ class TunPacketLoop(
         return nowMs - lastReconnectAttemptMs >= intervalMs
     }
 
+    private fun sendUdpPortUnreachable(
+        originalPacket: ByteArray,
+        originalLength: Int,
+        meta: UdpPacketMeta,
+        writeToTun: (ByteArray) -> Unit
+    ): Boolean {
+        val totalLength = ((originalPacket[2].toInt() and 0xFF) shl 8) or (originalPacket[3].toInt() and 0xFF)
+        if (totalLength <= 0 || totalLength > originalLength) {
+            return false
+        }
+        val quoteBytes = minOf(totalLength, meta.ipHeaderLength + UDP_HEADER_BYTES)
+        if (quoteBytes <= 0 || quoteBytes > totalLength) {
+            return false
+        }
+        val icmpPayload = ByteArray(4 + quoteBytes)
+        System.arraycopy(originalPacket, 0, icmpPayload, 4, quoteBytes)
+
+        val ipHeaderLength = IPV4_HEADER_BYTES
+        val icmpHeaderLength = ICMP_HEADER_BYTES
+        val responseTotal = ipHeaderLength + icmpHeaderLength + icmpPayload.size
+        val response = ByteArray(responseTotal)
+
+        response[0] = 0x45.toByte()
+        response[1] = 0
+        write16(response, 2, responseTotal)
+        write16(response, 4, 0)
+        write16(response, 6, 0)
+        response[8] = DEFAULT_TTL.toByte()
+        response[9] = ICMP_PROTOCOL.toByte()
+        write16(response, 10, 0)
+
+        writeIpv4(response, 12, meta.destinationIp)
+        writeIpv4(response, 16, meta.sourceIp)
+        write16(response, 10, checksum(response, 0, ipHeaderLength))
+
+        val icmpOffset = ipHeaderLength
+        response[icmpOffset] = ICMP_DEST_UNREACHABLE.toByte()
+        response[icmpOffset + 1] = ICMP_PORT_UNREACHABLE_CODE.toByte()
+        write16(response, icmpOffset + 2, 0)
+        write16(response, icmpOffset + 4, 0)
+        write16(response, icmpOffset + 6, 0)
+        System.arraycopy(icmpPayload, 0, response, icmpOffset + icmpHeaderLength, icmpPayload.size)
+        write16(response, icmpOffset + 2, checksum(response, icmpOffset, icmpHeaderLength + icmpPayload.size))
+
+        writeToTun(response)
+        return true
+    }
+
+    private fun checksum(buffer: ByteArray, offset: Int, length: Int): Int {
+        var sum = 0L
+        var index = offset
+        while (index + 1 < offset + length) {
+            val word = ((buffer[index].toInt() and 0xFF) shl 8) or (buffer[index + 1].toInt() and 0xFF)
+            sum += word.toLong()
+            sum = (sum and 0xFFFF) + (sum ushr 16)
+            index += 2
+        }
+        if (index < offset + length) {
+            sum += ((buffer[index].toInt() and 0xFF) shl 8).toLong()
+            sum = (sum and 0xFFFF) + (sum ushr 16)
+        }
+        while ((sum ushr 16) != 0L) {
+            sum = (sum and 0xFFFF) + (sum ushr 16)
+        }
+        return sum.inv().toInt() and 0xFFFF
+    }
+
+    private fun write16(buffer: ByteArray, offset: Int, value: Int) {
+        buffer[offset] = ((value ushr 8) and 0xFF).toByte()
+        buffer[offset + 1] = (value and 0xFF).toByte()
+    }
+
+    private fun writeIpv4(buffer: ByteArray, offset: Int, ip: String) {
+        val parts = ip.split('.')
+        if (parts.size != 4) {
+            throw IllegalArgumentException("invalid IPv4 address: $ip")
+        }
+        for (i in 0 until 4) {
+            val octet = parts[i].toIntOrNull() ?: throw IllegalArgumentException("invalid IPv4 address: $ip")
+            if (octet !in 0..255) {
+                throw IllegalArgumentException("invalid IPv4 address: $ip")
+            }
+            buffer[offset + i] = octet.toByte()
+        }
+    }
+
     companion object {
         private const val TAG = "TunPacketLoop"
         private const val STATS_EMIT_INTERVAL_MS = 1_000L
@@ -304,5 +427,13 @@ class TunPacketLoop(
         private const val FORWARD_IDLE_TIMEOUT_MS = 180_000L
         private const val TRANSPORT_RECONNECT_INTERVAL_MS = 3_000L
         private const val SYN_RECONNECT_INTERVAL_MS = 800L
+        private const val HTTPS_PORT = 443
+        private const val IPV4_HEADER_BYTES = 20
+        private const val UDP_HEADER_BYTES = 8
+        private const val ICMP_HEADER_BYTES = 8
+        private const val ICMP_PROTOCOL = 1
+        private const val ICMP_DEST_UNREACHABLE = 3
+        private const val ICMP_PORT_UNREACHABLE_CODE = 3
+        private const val DEFAULT_TTL = 64
     }
 }

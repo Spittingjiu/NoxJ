@@ -37,6 +37,7 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
     - runtime transport reconnect attempts inside VPN loop after disconnects
     - reconnect attempts now run before packet forwarding work and stream-open timeout is shorter to reduce "stuck open" stalls
     - transport keepalive pings to reduce idle control/data socket drops on mobile networks
+    - YouTube-first Stage 3 step: UDP/443 packets now receive ICMP port-unreachable to encourage QUIC fallback to HTTPS/TCP over current forwarder
     - tracks uplink/downlink bytes and connect failures
   - VPN service now uses saved Nox credentials from UI fields (server URL, shared secret, client ID)
 - Internal diagnostics are now implemented for VPN data plane and Nox transport:
@@ -47,6 +48,7 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
 
 ## Important current limits (honest status)
 - This is not full VPN usability yet.
+- Current Stage 3 work is intentionally YouTube-first, not global internet success.
 - Routing is still intentionally incremental:
   - safe mode: private ranges only
   - controlled mode: private ranges + user-provided public IPv4 CIDR allowlist

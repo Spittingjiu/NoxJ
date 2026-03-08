@@ -27,6 +27,10 @@
     - fail-fast client-side TCP RST synthesis on transport write/abrupt-close failures
     - reduced per-stream open wait timeout to limit TUN loop stalls on slow/failed opens
   - current implementation is intentionally constrained (basic reconnect for new flows exists; no seamless failover for in-flight flows)
+- Stage 3 kickoff (YouTube-first scope):
+  - added targeted UDP/443 handling in TUN loop to emit ICMP port-unreachable back to apps
+  - purpose is to encourage faster QUIC->HTTPS/TCP fallback for YouTube traffic through current TCP data path
+  - this is intentionally a single-target improvement, not full internet protocol support
 - Routing safety hardening: implemented for this iteration:
   - removed global `0.0.0.0/0` capture for now
   - enabled safe split-route startup profile to preserve baseline internet connectivity
@@ -35,11 +39,10 @@
   - routing mode + CIDR allowlist are persisted and validated before VPN start
 
 ## Next step (priority)
-- Harden the new Nox transport forwarding path:
-  - improve behavior for in-flight sessions during transport resets (current reconnect helps new flows only)
-  - improve open/data/close error propagation and metrics
-  - validate outbound web reachability with packet captures using new diagnostics and tighten stream lifecycle behavior based on observed failures
-  - improve controlled public-routing UX (profiles, safe defaults, and route diagnostics)
+- Continue Stage 3 YouTube-first validation:
+  - verify YouTube HTTPS reachability with diagnostics after UDP/443 fallback signaling
+  - inspect early-close/open-failure metrics for YouTube target flows and tighten TCP lifecycle only where needed
+  - keep scope narrow to YouTube traffic before attempting broader internet coverage
 
 ## Follow-on steps
 - TCP correctness and resilience:
