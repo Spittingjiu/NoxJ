@@ -700,7 +700,7 @@ class NoxTransportClient(
     companion object {
         private const val TAG = "NoxTransportClient"
         private const val CONNECT_TIMEOUT_MS = 8_000
-        private const val CONTROL_TIMEOUT_MS = 3_000L
+        private const val CONTROL_TIMEOUT_MS = 8_000L
         private const val MAX_CONTROL_SIZE = 64 * 1024
         private const val MAX_QUEUED_DATA_CHUNKS = 32
         private const val KEEPALIVE_INTERVAL_MS = 20_000L

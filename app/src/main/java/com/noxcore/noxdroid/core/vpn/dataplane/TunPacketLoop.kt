@@ -37,6 +37,7 @@ class TunPacketLoop(
         val downlinkBytes: Long,
         val droppedForwardPackets: Long,
         val connectFailures: Long,
+        val transientOpenDeferrals: Long,
         val lastPacketSummary: String
     )
 
@@ -92,6 +93,7 @@ class TunPacketLoop(
             var lastCleanupMs = 0L
             var lastLoggedConnectFailures = 0L
             var lastLoggedDroppedPackets = 0L
+            var lastLoggedOpenDeferrals = 0L
 
             try {
                 while (isActive) {
@@ -103,10 +105,13 @@ class TunPacketLoop(
                     totalPackets += 1
                     val parsed = PacketParser.parse(buffer, read)
                     val nowMs = System.currentTimeMillis()
+                    val urgentReconnect = parsed is ParsedPacket.Ipv4Tcp &&
+                        parsed.meta.syn &&
+                        !parsed.meta.ack
 
                     var transportConnected = transportClient.isConnected()
                     if (!transportConnected &&
-                        nowMs - lastReconnectAttemptMs >= TRANSPORT_RECONNECT_INTERVAL_MS
+                        shouldAttemptReconnect(nowMs, lastReconnectAttemptMs, urgentReconnect)
                     ) {
                         reconnectAttempts += 1
                         lastReconnectAttemptMs = nowMs
@@ -176,6 +181,13 @@ class TunPacketLoop(
                             )
                             lastLoggedDroppedPackets = forwardStats.droppedPackets
                         }
+                        if (forwardStats.transientOpenDeferrals > lastLoggedOpenDeferrals) {
+                            DiagnosticsLog.warn(
+                                TAG,
+                                "transient open deferrals increased to ${forwardStats.transientOpenDeferrals} last=$lastSummary"
+                            )
+                            lastLoggedOpenDeferrals = forwardStats.transientOpenDeferrals
+                        }
                         onStats(
                             TunLoopStats(
                                 totalPackets = totalPackets,
@@ -191,6 +203,7 @@ class TunPacketLoop(
                                 downlinkBytes = forwardStats.downlinkBytes,
                                 droppedForwardPackets = forwardStats.droppedPackets,
                                 connectFailures = forwardStats.connectFailures,
+                                transientOpenDeferrals = forwardStats.transientOpenDeferrals,
                                 lastPacketSummary = lastSummary
                             )
                         )
@@ -234,6 +247,7 @@ class TunPacketLoop(
                         downlinkBytes = forwardStats.downlinkBytes,
                         droppedForwardPackets = forwardStats.droppedPackets,
                         connectFailures = forwardStats.connectFailures,
+                        transientOpenDeferrals = forwardStats.transientOpenDeferrals,
                         lastPacketSummary = lastSummary
                     )
                 )
@@ -260,6 +274,19 @@ class TunPacketLoop(
         return false
     }
 
+    private fun shouldAttemptReconnect(
+        nowMs: Long,
+        lastReconnectAttemptMs: Long,
+        urgentReconnect: Boolean
+    ): Boolean {
+        val intervalMs = if (urgentReconnect) {
+            SYN_RECONNECT_INTERVAL_MS
+        } else {
+            TRANSPORT_RECONNECT_INTERVAL_MS
+        }
+        return nowMs - lastReconnectAttemptMs >= intervalMs
+    }
+
     companion object {
         private const val TAG = "TunPacketLoop"
         private const val STATS_EMIT_INTERVAL_MS = 1_000L
@@ -267,5 +294,6 @@ class TunPacketLoop(
         private const val SESSION_IDLE_TIMEOUT_MS = 60_000L
         private const val FORWARD_IDLE_TIMEOUT_MS = 60_000L
         private const val TRANSPORT_RECONNECT_INTERVAL_MS = 3_000L
+        private const val SYN_RECONNECT_INTERVAL_MS = 800L
     }
 }

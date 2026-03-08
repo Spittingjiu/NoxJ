@@ -17,7 +17,8 @@ class TcpTunForwarder(
         val uplinkBytes: Long,
         val downlinkBytes: Long,
         val droppedPackets: Long,
-        val connectFailures: Long
+        val connectFailures: Long,
+        val transientOpenDeferrals: Long
     )
 
     private val sessions = linkedMapOf<TcpSessionKey, ForwardSession>()
@@ -27,6 +28,7 @@ class TcpTunForwarder(
     private var downlinkBytes = 0L
     private var droppedPackets = 0L
     private var connectFailures = 0L
+    private var transientOpenDeferrals = 0L
 
     fun handleClientPacket(packet: TcpPacketMeta): Boolean {
         synchronized(sessions) {
@@ -115,7 +117,8 @@ class TcpTunForwarder(
                 uplinkBytes = uplinkBytes,
                 downlinkBytes = downlinkBytes,
                 droppedPackets = droppedPackets,
-                connectFailures = connectFailures
+                connectFailures = connectFailures,
+                transientOpenDeferrals = transientOpenDeferrals
             )
         }
     }
@@ -207,6 +210,14 @@ class TcpTunForwarder(
             val reason = openResult.error ?: "open failed"
             Log.w(TAG, "open stream failed for $target: $reason")
             DiagnosticsLog.warn(TAG, "open stream failed target=$target reason=$reason")
+            if (isTransientOpenFailure(reason)) {
+                transientOpenDeferrals += 1
+                DiagnosticsLog.warn(
+                    TAG,
+                    "deferring SYN reset for transient open failure target=$target reason=$reason"
+                )
+                return false
+            }
             sendRstForFailedOpen(packet)
             return false
         }
@@ -538,6 +549,15 @@ class TcpTunForwarder(
             normalized.contains("failed") ||
             normalized.contains("timeout") ||
             normalized.contains("reset")
+    }
+
+    private fun isTransientOpenFailure(reason: String): Boolean {
+        val normalized = reason.lowercase()
+        return normalized.contains("transport disconnected") ||
+            normalized.contains("transport write failed") ||
+            normalized.contains("transport read failed") ||
+            normalized.contains("transport closed") ||
+            normalized.contains("timeout")
     }
 
     private data class ForwardSession(
