@@ -1,22 +1,27 @@
-# NoxDroid (NoxCore Trial Client)
+# NoxDroid (NoxCore WSS Handshake Tester)
 
-Minimal native Android client project for early NoxCore connectivity validation.
+Native Kotlin Android client for real NoxCore-style secure WebSocket handshake validation.
 
-## What this trial app does (real)
+## What this app does (real)
 - Native Kotlin Android app (Gradle / Android Studio structure)
 - Form fields for:
-  - Server endpoint (`host:port`)
+  - Server WebSocket URL (`wss://host/path`)
   - Shared secret
   - Client ID
-- Connect/disconnect button and status text
-- Real TCP socket reachability check to the provided endpoint
-- Sends a lightweight trial greeting payload after TCP connect (`trial-connect:<clientId>`)
+- Runs a real secure WebSocket (`wss`) handshake test
+- Sends a JSON `hello` frame with:
+  - `client_id`
+  - `timestamp_ms`
+  - `nonce`
+  - HMAC-SHA256 signature (`signature_b64`) over `client_id:timestamp_ms:nonce` using the provided shared secret
+- Waits for and validates a server JSON `hello_ack` frame
+- Reports pass/fail in UI status text with handshake-specific errors
 
-## What is placeholder / not production yet
-- No encrypted/authenticated NoxCore protocol implementation yet
+## What is still missing / not production yet
 - No persistent tunnel, packet forwarding, or VPNService integration yet
-- Shared secret is validated for non-empty input only (not cryptographically used yet)
-- Disconnect currently resets UI state (no long-lived background connection)
+- No full binary protocol/frame layer beyond hello/hello_ack subset
+- If server responds only with binary frames, app reports this as unsupported for now
+- No reconnect manager, heartbeat loop, or background foreground-service lifecycle yet
 
 ## Requirements
 - Android Studio Ladybug+ (or equivalent)
@@ -50,5 +55,5 @@ Minimal native Android client project for early NoxCore connectivity validation.
 
 ## Project structure
 - `app/src/main/java/com/noxcore/noxdroid/ui/MainActivity.kt`: UI + interaction state
-- `app/src/main/java/com/noxcore/noxdroid/core/connection/SocketConnectionService.kt`: trial socket connect test abstraction
+- `app/src/main/java/com/noxcore/noxdroid/core/connection/SocketConnectionService.kt`: real `wss` hello/hello_ack handshake test
 - `ROADMAP.md`: next-phase plan to full mobile client

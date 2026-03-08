@@ -1,13 +1,14 @@
 # ROADMAP: NoxDroid -> Full Mobile Client
 
-## Phase 1 (current trial)
-- Basic native UI for endpoint, secret, client ID
-- TCP connect test and status reporting
+## Phase 1 (current baseline)
+- Basic native UI for server URL, secret, client ID
+- Real secure WebSocket (`wss`) hello/hello_ack test
+- HMAC-based hello auth payload generation on-device
 
 ## Phase 2 (protocol correctness)
-- Define and implement authenticated handshake with Nox server
-- Add request/response framing, error codes, and retry/backoff
-- Cryptographically use shared secret (or token/cert replacement)
+- Expand handshake compatibility to exact deployed NoxCore schema variants
+- Add full request/response framing (including binary), error codes, and retry/backoff
+- Support token/certificate-based auth model replacement where needed
 
 ## Phase 3 (transport lifecycle)
 - Introduce long-lived connection manager with heartbeat

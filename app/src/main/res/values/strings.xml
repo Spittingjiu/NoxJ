@@ -1,11 +1,10 @@
 <resources>
     <string name="app_name">NoxDroid</string>
-    <string name="title_trial_client">NoxCore Trial Client</string>
-    <string name="hint_server_address">Server address (host:port)</string>
+    <string name="title_handshake_tester">NoxCore WSS Handshake Tester</string>
+    <string name="hint_server_address">Server WebSocket URL (wss://host/path)</string>
     <string name="hint_shared_secret">Shared secret</string>
     <string name="hint_client_id">Client ID</string>
-    <string name="action_connect">Connect</string>
-    <string name="action_disconnect">Disconnect</string>
+    <string name="action_run_handshake_test">Run Handshake Test</string>
     <string name="label_status">Status</string>
-    <string name="status_idle">Idle: not connected</string>
+    <string name="status_idle">Idle: ready to test WSS hello/hello_ack</string>
 </resources>
