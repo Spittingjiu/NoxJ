@@ -14,7 +14,6 @@ import java.io.BufferedOutputStream
 import java.io.EOFException
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.net.SocketTimeoutException
 import java.net.URI
 import java.security.MessageDigest
 import java.security.SecureRandom

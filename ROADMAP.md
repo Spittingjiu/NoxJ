@@ -6,16 +6,19 @@
 - Data plane step 1: implemented (TUN packet capture loop, IPv4/TCP classification, TCP session mapping groundwork).
 - Data plane step 2: implemented as constrained real forwarding subset:
   - TUN-side TCP session acceptance (SYN handling)
-  - protected upstream socket connect per session
   - synthetic TCP replies back to TUN
   - bidirectional payload forwarding for minimal established flows
-- Nox transport data-plane integration: not implemented yet.
+- Data plane step 3 (first honest Nox transport subset): implemented:
+  - one protected long-lived WSS Nox control/data socket for VPN session
+  - per-flow `open/open_resp/data/close` mapped from constrained TCP forwarder
+  - downlink Nox `data` frames injected back as TCP payload to TUN
+  - current implementation is intentionally constrained (no reconnect/failover yet)
 
 ## Next step (priority)
-- Replace direct protected-socket forwarding path with Nox transport framing path:
-  - map TUN-side session bytes into Nox transport messages
-  - process return-path messages and inject packets to TUN
-  - keep current constrained TCP proxy as fallback/debug mode until parity
+- Harden the new Nox transport forwarding path:
+  - add transport keepalive/reconnect and session cleanup on transport resets
+  - improve open/data/close error propagation and metrics
+  - evaluate fallback/debug mode policy for local direct sockets (currently removed from main path)
 
 ## Follow-on steps
 - TCP correctness and resilience:
