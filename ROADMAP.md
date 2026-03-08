@@ -15,6 +15,10 @@
   - downlink Nox `data` frames injected back as TCP payload to TUN
   - TCP stream close lifecycle improved to keep sessions alive through basic half-close instead of immediate FIN teardown
   - current implementation is intentionally constrained (no reconnect/failover yet)
+- Routing safety hardening: implemented for this iteration:
+  - removed global `0.0.0.0/0` capture for now
+  - enabled safe split-route startup profile to preserve baseline internet connectivity
+  - app traffic is disallowed from VPN interface to protect Nox control/handshake path from self-capture
 
 ## Next step (priority)
 - Harden the new Nox transport forwarding path:
@@ -35,7 +39,7 @@
   - heartbeat + reconnect/backoff
   - network-change handling
 - VPN policy and reliability:
-  - split/full tunnel controls
+  - split/full tunnel controls (full tunnel only after forwarding path is complete and validated)
   - MTU tuning
   - foreground notification UX polish
 - HyperOS hardening:

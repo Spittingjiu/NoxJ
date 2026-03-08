@@ -13,6 +13,8 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
   - System VPN permission flow (`VpnService.prepare(...)`)
   - Foreground service notification + stop action
   - Real `VpnService.Builder` session/interface setup (`establish()`)
+  - Safe split-route startup mode (not global capture) to preserve baseline connectivity while forwarding remains constrained
+  - Explicit app-level VPN bypass to prevent Nox control/handshake sockets from self-capture loops
   - Start/stop control from UI
 - First real forwarding path is implemented:
   - Real TUN read + write loop
@@ -30,6 +32,7 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
 
 ## Important current limits (honest status)
 - This is not full VPN usability yet.
+- Current routing mode is intentionally **safe split-tunnel**, not full `0.0.0.0/0` global routing.
 - Forwarding is limited to a constrained IPv4/TCP subset.
 - UDP is not forwarded.
 - TCP handling is minimal and does not implement full RFC-grade behavior (retransmission/window management/selective ACK/etc.).

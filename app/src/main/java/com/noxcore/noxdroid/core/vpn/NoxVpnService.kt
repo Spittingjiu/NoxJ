@@ -66,7 +66,15 @@ class NoxVpnService : VpnService() {
         isStopping = false
         updateState(NoxVpnState.Starting)
         ensureNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("Starting VPN session"))
+        startForeground(NOTIFICATION_ID, buildNotification("Starting VPN session (safe split-route mode)"))
+
+        val clientConfig = NoxClientConfigStore.load(this)
+        if (clientConfig == null) {
+            updateState(NoxVpnState.Error("Missing Nox transport config. Run handshake with valid fields first."))
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
 
         val configureIntent = PendingIntent.getActivity(
             this,
@@ -75,15 +83,28 @@ class NoxVpnService : VpnService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val tunnel = Builder()
+        val builder = Builder()
             .setSession(SESSION_NAME)
             .setMtu(DEFAULT_MTU)
             .addAddress(TUN_IPV4_ADDRESS, TUN_PREFIX)
-            .addRoute("0.0.0.0", 0)
-            .addDnsServer("1.1.1.1")
-            .addDnsServer("8.8.8.8")
             .setConfigureIntent(configureIntent)
-            .establish()
+
+        // Prevent the app's own control/handshake sockets from ever entering the VPN.
+        try {
+            builder.addDisallowedApplication(packageName)
+        } catch (_: Exception) {
+            updateState(NoxVpnState.Error("Failed to apply VPN app bypass for control path"))
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        // Safe mode: avoid global 0.0.0.0/0 capture until forwarding supports full internet traffic.
+        SAFE_SPLIT_TUNNEL_ROUTES.forEach { (network, prefix) ->
+            builder.addRoute(network, prefix)
+        }
+
+        val tunnel = builder.establish()
 
         if (tunnel == null) {
             updateState(NoxVpnState.Error("Failed to establish VPN interface"))
@@ -93,15 +114,6 @@ class NoxVpnService : VpnService() {
         }
 
         tunnelFd = tunnel
-
-        val clientConfig = NoxClientConfigStore.load(this)
-        if (clientConfig == null) {
-            updateState(NoxVpnState.Error("Missing Nox transport config. Run handshake with valid fields first."))
-            closeTunnel()
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return
-        }
 
         val loop = TunPacketLoop(
             config = clientConfig,
@@ -156,7 +168,7 @@ class NoxVpnService : VpnService() {
             )
         )
 
-        updateNotification("VPN active. Constrained IPv4/TCP via Nox transport open/data/close.")
+        updateNotification("VPN active (safe split-route mode). Constrained IPv4/TCP via Nox transport.")
     }
 
     private fun stopVpn(reason: String) {
@@ -250,6 +262,12 @@ class NoxVpnService : VpnService() {
         private const val DEFAULT_MTU = 1400
         private const val TUN_IPV4_ADDRESS = "10.77.0.2"
         private const val TUN_PREFIX = 32
+        private val SAFE_SPLIT_TUNNEL_ROUTES = listOf(
+            "10.0.0.0" to 8,
+            "172.16.0.0" to 12,
+            "192.168.0.0" to 16,
+            "100.64.0.0" to 10
+        )
 
         private val _vpnState = MutableStateFlow<NoxVpnState>(NoxVpnState.Idle)
         val vpnState: StateFlow<NoxVpnState> = _vpnState.asStateFlow()
