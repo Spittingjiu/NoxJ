@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.NoxDroid" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/nox_primary</item>
+        <item name="colorSecondary">@color/nox_secondary</item>
+    </style>
+</resources>
