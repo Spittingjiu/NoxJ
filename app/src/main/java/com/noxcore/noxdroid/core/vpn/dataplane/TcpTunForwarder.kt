@@ -52,43 +52,47 @@ class TcpTunForwarder(
             if (packet.payloadLength > 0) {
                 handled = true
                 val expectedSeq = session.clientNextSeq
-                if (packet.sequenceNumber == expectedSeq) {
-                    val sent = transportClient.sendData(session.streamId, packet.payload)
-                    if (!sent) {
-                        val nowMs = System.currentTimeMillis()
-                        session.consecutiveWriteFailures += 1
-                        if (session.firstWriteFailureAtMs == 0L) {
-                            session.firstWriteFailureAtMs = nowMs
+                when {
+                    packet.sequenceNumber == expectedSeq -> {
+                        if (!forwardClientPayload(session, packet.payload)) {
+                            return false
                         }
-                        if (shouldTerminateForWriteFailure(session, nowMs)) {
-                            DiagnosticsLog.warn(
-                                TAG,
-                                "transport write failed terminal stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
-                            )
-                            sendRst(session)
-                            closeSession(session, "transport write failed", sendCloseFrame = true)
-                        } else {
-                            DiagnosticsLog.warn(
-                                TAG,
-                                "transport write failed transient stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
-                            )
-                        }
-                        return false
+                        drainBufferedClientData(session)
+                        sendTcp(
+                            session = session,
+                            seq = session.serverSeq,
+                            ack = session.clientNextSeq,
+                            flags = FLAG_ACK,
+                            payload = ByteArray(0)
+                        )
                     }
-                    session.consecutiveWriteFailures = 0
-                    session.firstWriteFailureAtMs = 0L
-                    session.clientNextSeq = add32(session.clientNextSeq, packet.payloadLength)
-                    uplinkBytes += packet.payloadLength.toLong()
-                } else {
-                    return false
+                    packet.sequenceNumber < expectedSeq -> {
+                        // Duplicate or retransmitted segment; ack current sequence to advance sender.
+                        sendTcp(
+                            session = session,
+                            seq = session.serverSeq,
+                            ack = session.clientNextSeq,
+                            flags = FLAG_ACK,
+                            payload = ByteArray(0)
+                        )
+                        return true
+                    }
+                    else -> {
+                        // Out-of-order segment; buffer within limits and ack current sequence.
+                        val buffered = bufferOutOfOrderSegment(session, packet.sequenceNumber, packet.payload)
+                        if (!buffered) {
+                            droppedPackets += 1
+                        }
+                        sendTcp(
+                            session = session,
+                            seq = session.serverSeq,
+                            ack = session.clientNextSeq,
+                            flags = FLAG_ACK,
+                            payload = ByteArray(0)
+                        )
+                        return true
+                    }
                 }
-                sendTcp(
-                    session = session,
-                    seq = session.serverSeq,
-                    ack = session.clientNextSeq,
-                    flags = FLAG_ACK,
-                    payload = ByteArray(0)
-                )
             }
 
             if (packet.fin) {
@@ -508,6 +512,86 @@ class TcpTunForwarder(
         return packet
     }
 
+    private fun forwardClientPayload(session: ForwardSession, payload: ByteArray): Boolean {
+        val sent = transportClient.sendData(session.streamId, payload)
+        if (!sent) {
+            val nowMs = System.currentTimeMillis()
+            session.consecutiveWriteFailures += 1
+            if (session.firstWriteFailureAtMs == 0L) {
+                session.firstWriteFailureAtMs = nowMs
+            }
+            if (shouldTerminateForWriteFailure(session, nowMs)) {
+                DiagnosticsLog.warn(
+                    TAG,
+                    "transport write failed terminal stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
+                )
+                sendRst(session)
+                closeSession(session, "transport write failed", sendCloseFrame = true)
+            } else {
+                DiagnosticsLog.warn(
+                    TAG,
+                    "transport write failed transient stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
+                )
+            }
+            return false
+        }
+        session.consecutiveWriteFailures = 0
+        session.firstWriteFailureAtMs = 0L
+        session.clientNextSeq = add32(session.clientNextSeq, payload.size)
+        uplinkBytes += payload.size.toLong()
+        return true
+    }
+
+    private fun bufferOutOfOrderSegment(
+        session: ForwardSession,
+        sequenceNumber: Long,
+        payload: ByteArray
+    ): Boolean {
+        if (payload.isEmpty()) {
+            return true
+        }
+        val expected = session.clientNextSeq
+        val distance = tcpSeqDistance(expected, sequenceNumber)
+        if (distance < 0 || distance > MAX_OUT_OF_ORDER_BYTES) {
+            return false
+        }
+        val existing = session.outOfOrderSegments[sequenceNumber]
+        if (existing != null) {
+            return true
+        }
+        if (session.outOfOrderSegments.size >= MAX_OUT_OF_ORDER_SEGMENTS) {
+            return false
+        }
+        if (session.outOfOrderBytes + payload.size > MAX_OUT_OF_ORDER_BUFFER_BYTES) {
+            return false
+        }
+        session.outOfOrderSegments[sequenceNumber] = payload
+        session.outOfOrderBytes += payload.size
+        return true
+    }
+
+    private fun drainBufferedClientData(session: ForwardSession) {
+        while (true) {
+            val nextPayload = session.outOfOrderSegments.remove(session.clientNextSeq) ?: break
+            session.outOfOrderBytes -= nextPayload.size
+            if (!forwardClientPayload(session, nextPayload)) {
+                // If forwarding fails, keep the remainder buffered for retransmit.
+                session.outOfOrderSegments[session.clientNextSeq] = nextPayload
+                session.outOfOrderBytes += nextPayload.size
+                break
+            }
+        }
+    }
+
+    private fun tcpSeqDistance(expected: Long, candidate: Long): Long {
+        val diff = (candidate - expected) and 0xFFFF_FFFFL
+        return if (diff and 0x8000_0000L != 0L) {
+            diff - 0x1_0000_0000L
+        } else {
+            diff
+        }
+    }
+
     private fun checksum(buffer: ByteArray, offset: Int, length: Int): Int {
         var sum = 0L
         var index = offset
@@ -598,7 +682,9 @@ class TcpTunForwarder(
         var remoteFinSent: Boolean = false,
         var closeFrameSent: Boolean = false,
         var consecutiveWriteFailures: Int = 0,
-        var firstWriteFailureAtMs: Long = 0L
+        var firstWriteFailureAtMs: Long = 0L,
+        val outOfOrderSegments: MutableMap<Long, ByteArray> = linkedMapOf(),
+        var outOfOrderBytes: Int = 0
     )
 
     companion object {
@@ -612,6 +698,9 @@ class TcpTunForwarder(
         private const val MAX_CONNECTED_WRITE_FAILURES = 3
         private const val MAX_TRANSIENT_WRITE_FAILURES = 5
         private const val TRANSIENT_WRITE_FAILURE_GRACE_MS = 6_000L
+        private const val MAX_OUT_OF_ORDER_SEGMENTS = 64
+        private const val MAX_OUT_OF_ORDER_BUFFER_BYTES = 256 * 1024
+        private const val MAX_OUT_OF_ORDER_BYTES = 512 * 1024
 
         private const val FLAG_FIN = 0x01
         private const val FLAG_RST = 0x04
