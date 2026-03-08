@@ -1,31 +1,27 @@
-# NoxDroid (NoxCore WSS Handshake Probe)
+# NoxDroid (NoxJ Android Client Foundation)
 
-Native Kotlin Android app that validates the current NoxCore WSS handshake behavior.
+Native Kotlin Android app progressing from a handshake probe toward a real VPN client.
 
-## What this app does
-- Collects:
-  - Server URL (`wss://host/path`)
-  - Shared secret
-  - Client ID
-- Opens a TLS socket to the server.
-- Performs the same HTTP upgrade flow NoxCore uses for WSS (`GET`, `Upgrade: websocket`, `Sec-WebSocket-Key`, `Sec-WebSocket-Protocol: http/1.1`, etc.).
-- After `101 Switching Protocols`, speaks NoxCore control framing directly:
-  - 4-byte big-endian length prefix
-  - UTF-8 JSON envelope: `{ "type": "...", "payload": { ... } }`
-- Sends real NoxCore `hello` payload fields:
-  - `client_id`
-  - `ts` (Unix seconds)
-  - `nonce` (hex)
-  - `auth = base64(HMAC-SHA256(secret, "hello|client_id|ts|nonce"))`
-- Requires `hello_ack` and validates:
-  - `server_ts`
-  - `server_nonce`
-  - `auth = base64(HMAC-SHA256(secret, "ack|client_id|ts|nonce|server_ts|server_nonce"))`
+## What is implemented now
+- Existing NoxCore handshake tester is preserved:
+  - Input fields for `wss://` server URL, shared secret, and client ID
+  - Real TLS socket + WebSocket upgrade
+  - Real Nox `hello` -> `hello_ack` HMAC validation
+- New Android VPN foundation is implemented:
+  - `VpnService` subclass (`NoxVpnService`)
+  - System VPN permission flow (`VpnService.prepare(...)`)
+  - Foreground service notification + stop action
+  - Real `VpnService.Builder` session/interface setup (`establish()`)
+  - Start/stop control from UI
 
-## Scope limits
-- This is a handshake/connect probe, not a full tunnel client.
-- `open`/`open_resp`, `data`, `close`, keepalive loops, SOCKS/VPN path, and reconnect manager are not implemented yet.
-- No claim of VPN/proxy functionality in current app state.
+## Important current limit (honest status)
+- The VPN data plane is not implemented yet.
+- No packet forwarding between TUN and Nox transport is running in this iteration.
+- Current VPN mode is control-plane skeleton only: it establishes a real Android VPN interface and service lifecycle.
+
+## HyperOS / modern Android notes
+- VPN runs as a foreground service to survive aggressive background limits.
+- Users may still need to disable battery restrictions for reliable long-running operation on HyperOS-class ROMs.
 
 ## Build
 1. Ensure wrapper is executable:
@@ -42,6 +38,8 @@ Native Kotlin Android app that validates the current NoxCore WSS handshake behav
    ```
 
 ## Project layout
-- `app/src/main/java/com/noxcore/noxdroid/ui/MainActivity.kt`: UI + result display
-- `app/src/main/java/com/noxcore/noxdroid/core/connection/SocketConnectionService.kt`: WSS upgrade + Nox `hello`/`hello_ack` framing and auth validation
-- `ROADMAP.md`: planned next steps
+- `app/src/main/java/com/noxcore/noxdroid/ui/MainActivity.kt`: handshake UI + VPN permission/start/stop UI flow
+- `app/src/main/java/com/noxcore/noxdroid/core/connection/SocketConnectionService.kt`: WSS + Nox `hello`/`hello_ack` handshake probe
+- `app/src/main/java/com/noxcore/noxdroid/core/vpn/NoxVpnService.kt`: foreground `VpnService` skeleton and session setup
+- `app/src/main/java/com/noxcore/noxdroid/core/vpn/NoxVpnState.kt`: VPN runtime state model
+- `ROADMAP.md`: next iterations

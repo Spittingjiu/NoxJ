@@ -1,10 +1,19 @@
 <resources>
     <string name="app_name">NoxDroid</string>
-    <string name="title_handshake_tester">NoxCore WSS Handshake Tester</string>
+    <string name="title_handshake_tester">NoxJ Android Client Foundation</string>
     <string name="hint_server_address">Server WebSocket URL (wss://host/path)</string>
     <string name="hint_shared_secret">Shared secret</string>
     <string name="hint_client_id">Client ID</string>
     <string name="action_run_handshake_test">Run Handshake Test</string>
+    <string name="label_vpn">VPN</string>
+    <string name="action_start_vpn">Start VPN</string>
+    <string name="action_stop_vpn">Stop VPN</string>
+    <string name="status_vpn_idle">VPN idle (not running)</string>
+    <string name="status_vpn_starting">VPN starting...</string>
+    <string name="status_vpn_running_no_forwarding">VPN active. Data-plane forwarding is not implemented yet.</string>
+    <string name="status_vpn_stopping">VPN stopping...</string>
+    <string name="status_vpn_error">VPN error: %1$s</string>
+    <string name="status_vpn_permission_denied">VPN permission denied</string>
     <string name="label_status">Status</string>
     <string name="status_idle">Idle: ready to test WSS hello/hello_ack</string>
 </resources>

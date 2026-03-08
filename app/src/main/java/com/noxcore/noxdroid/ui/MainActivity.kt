@@ -1,13 +1,20 @@
 package com.noxcore.noxdroid.ui
 
+import android.app.Activity
+import android.net.VpnService
 import android.os.Bundle
+import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.textfield.TextInputEditText
 import com.noxcore.noxdroid.R
 import com.noxcore.noxdroid.core.connection.ConnectionState
 import com.noxcore.noxdroid.core.connection.SocketConnectionService
+import com.noxcore.noxdroid.core.vpn.NoxVpnService
+import com.noxcore.noxdroid.core.vpn.NoxVpnState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -19,9 +26,22 @@ class MainActivity : AppCompatActivity() {
     private lateinit var secretEditText: TextInputEditText
     private lateinit var clientIdEditText: TextInputEditText
     private lateinit var connectButton: MaterialButton
-    private lateinit var statusText: android.widget.TextView
+    private lateinit var vpnButton: MaterialButton
+    private lateinit var statusText: TextView
+    private lateinit var vpnStatusText: TextView
 
     private var activeJob: Job? = null
+    private var currentVpnState: NoxVpnState = NoxVpnState.Idle
+    private val vpnPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                NoxVpnService.start(this)
+            } else {
+                setVpnStatus(
+                    NoxVpnState.Error(getString(R.string.status_vpn_permission_denied))
+                )
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -31,7 +51,9 @@ class MainActivity : AppCompatActivity() {
         secretEditText = findViewById(R.id.secretEditText)
         clientIdEditText = findViewById(R.id.clientIdEditText)
         connectButton = findViewById(R.id.connectButton)
+        vpnButton = findViewById(R.id.vpnButton)
         statusText = findViewById(R.id.statusText)
+        vpnStatusText = findViewById(R.id.vpnStatusText)
 
         connectButton.setOnClickListener {
             val serverUrl = serverEditText.text?.toString().orEmpty().trim()
@@ -47,6 +69,23 @@ class MainActivity : AppCompatActivity() {
                     clientId = clientId
                 )
                 setState(result)
+            }
+        }
+
+        vpnButton.setOnClickListener {
+            when (currentVpnState) {
+                is NoxVpnState.RunningNoForwarding,
+                is NoxVpnState.Starting -> NoxVpnService.stop(this)
+
+                else -> requestAndStartVpn()
+            }
+        }
+
+        lifecycleScope.launch {
+            repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+                NoxVpnService.vpnState.collect { state ->
+                    setVpnStatus(state)
+                }
             }
         }
     }
@@ -76,6 +115,45 @@ class MainActivity : AppCompatActivity() {
             is ConnectionState.Error -> {
                 connectButton.text = getString(R.string.action_run_handshake_test)
                 statusText.text = "Handshake test failed: ${state.details}"
+            }
+        }
+    }
+
+    private fun requestAndStartVpn() {
+        val prepareIntent = VpnService.prepare(this)
+        if (prepareIntent != null) {
+            vpnPermissionLauncher.launch(prepareIntent)
+        } else {
+            NoxVpnService.start(this)
+        }
+    }
+
+    private fun setVpnStatus(state: NoxVpnState) {
+        currentVpnState = state
+        when (state) {
+            is NoxVpnState.Idle -> {
+                vpnButton.text = getString(R.string.action_start_vpn)
+                vpnStatusText.text = getString(R.string.status_vpn_idle)
+            }
+
+            is NoxVpnState.Starting -> {
+                vpnButton.text = getString(R.string.action_stop_vpn)
+                vpnStatusText.text = getString(R.string.status_vpn_starting)
+            }
+
+            is NoxVpnState.RunningNoForwarding -> {
+                vpnButton.text = getString(R.string.action_stop_vpn)
+                vpnStatusText.text = getString(R.string.status_vpn_running_no_forwarding)
+            }
+
+            is NoxVpnState.Stopping -> {
+                vpnButton.text = getString(R.string.action_start_vpn)
+                vpnStatusText.text = getString(R.string.status_vpn_stopping)
+            }
+
+            is NoxVpnState.Error -> {
+                vpnButton.text = getString(R.string.action_start_vpn)
+                vpnStatusText.text = getString(R.string.status_vpn_error, state.details)
             }
         }
     }

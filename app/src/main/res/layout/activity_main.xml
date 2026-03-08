@@ -85,6 +85,38 @@
             app:layout_constraintTop_toBottomOf="@id/clientIdInputLayout" />
 
         <TextView
+            android:id="@+id/vpnLabel"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/label_vpn"
+            android:textAppearance="@style/TextAppearance.Material3.BodyLarge"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/connectButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/vpnButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/action_start_vpn"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/vpnLabel" />
+
+        <TextView
+            android:id="@+id/vpnStatusText"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/status_vpn_idle"
+            android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/vpnButton" />
+
+        <TextView
             android:id="@+id/statusLabel"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
@@ -93,7 +125,7 @@
             android:textAppearance="@style/TextAppearance.Material3.BodyLarge"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@id/connectButton" />
+            app:layout_constraintTop_toBottomOf="@id/vpnStatusText" />
 
         <TextView
             android:id="@+id/statusText"
