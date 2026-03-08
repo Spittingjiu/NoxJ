@@ -6,9 +6,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONException
 import org.json.JSONObject
@@ -371,8 +370,8 @@ class NoxTransportClient(
         callback?.invoke(reason)
     }
 
-    private fun keepaliveLoop() {
-        while (isActive) {
+    private suspend fun keepaliveLoop() {
+        while (true) {
             delay(KEEPALIVE_INTERVAL_MS)
             if (!isConnected()) {
                 continue
