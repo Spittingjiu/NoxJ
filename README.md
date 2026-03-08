@@ -29,14 +29,18 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
     - handles stream close via Nox `close` frames
     - synthesizes TCP responses back into TUN (SYN-ACK/ACK/PSH/FIN)
     - basic TCP half-close behavior to avoid immediate teardown on first FIN
+    - improved TCP half-close handling to avoid prematurely closing upstream stream on client FIN
     - downlink TCP payload segmentation (smaller injected packets instead of oversized single writes)
     - TCP RST synthesis for failed stream opens / unknown sessions so client sockets fail fast instead of hanging
+    - runtime transport reconnect attempts inside VPN loop after disconnects
+    - transport keepalive pings to reduce idle control/data socket drops on mobile networks
     - tracks uplink/downlink bytes and connect failures
   - VPN service now uses saved Nox credentials from UI fields (server URL, shared secret, client ID)
 - Internal diagnostics are now implemented for VPN data plane and Nox transport:
   - persisted log file at app-private `files/nox_vpn_diagnostics.log` (rotated)
   - in-app diagnostics panel with recent events
   - actionable events for transport connect/open/close failures, forwarder session lifecycle, packet drop/open-failure growth
+  - in-app VPN status now shows transport up/down and reconnect attempt/success counters
 
 ## Important current limits (honest status)
 - This is not full VPN usability yet.
@@ -49,11 +53,13 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
 - DNS over UDP is therefore not available through the VPN data plane yet.
 - TCP handling is minimal and does not implement full RFC-grade behavior (retransmission/window management/selective ACK/etc.).
 - TCP close sequencing is improved but still simplified (no full FIN_WAIT/TIME_WAIT state machine).
+- Runtime reconnect currently recovers only new flows after transport loss; existing in-flight flows can still drop.
 - Nox data-plane support is currently the first honest subset only:
   - one long-lived WSS transport connection per VPN session
   - per-flow Nox `open/open_resp/data/close` stream usage
-  - no reconnect/failover yet inside VPN runtime
-  - no H2/H3 transport path in Android client yet
+  - basic reconnect exists for new flows after disconnects; no seamless failover for in-flight flows
+- no H2/H3 transport path in Android client yet
+- no claim yet of complete WeChat/full real-app compatibility in this iteration
 
 ## HyperOS / modern Android notes
 - VPN runs as a foreground service to survive aggressive background limits.

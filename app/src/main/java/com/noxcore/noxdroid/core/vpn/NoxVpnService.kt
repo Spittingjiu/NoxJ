@@ -57,6 +57,9 @@ class NoxVpnService : VpnService() {
                     tcpPackets = 0,
                     activeTcpSessions = 0,
                     activeForwardSessions = 0,
+                    transportConnected = false,
+                    reconnectAttempts = 0,
+                    reconnectSuccesses = 0,
                     uplinkBytes = 0,
                     downlinkBytes = 0,
                     droppedForwardPackets = 0,
@@ -174,6 +177,9 @@ class NoxVpnService : VpnService() {
                     tcpPackets = stats.tcpPackets,
                     activeTcpSessions = stats.activeTcpSessions,
                     activeForwardSessions = stats.activeForwardSessions,
+                    transportConnected = stats.transportConnected,
+                    reconnectAttempts = stats.reconnectAttempts,
+                    reconnectSuccesses = stats.reconnectSuccesses,
                     uplinkBytes = stats.uplinkBytes,
                     downlinkBytes = stats.downlinkBytes,
                     droppedForwardPackets = stats.droppedForwardPackets,
@@ -183,8 +189,9 @@ class NoxVpnService : VpnService() {
                 updateState(runningState)
                 updateNotification(
                     "[$routeProfileLabel] forwarding tcp sessions=${stats.activeForwardSessions} " +
+                        "transport=${if (stats.transportConnected) "up" else "down"} " +
                         "up=${stats.uplinkBytes}B down=${stats.downlinkBytes}B " +
-                        "connect_fail=${stats.connectFailures}"
+                        "connect_fail=${stats.connectFailures} drop=${stats.droppedForwardPackets}"
                 )
             },
             onError = { reason ->
@@ -209,6 +216,9 @@ class NoxVpnService : VpnService() {
                 tcpPackets = 0,
                 activeTcpSessions = 0,
                 activeForwardSessions = 0,
+                transportConnected = false,
+                reconnectAttempts = 0,
+                reconnectSuccesses = 0,
                 uplinkBytes = 0,
                 downlinkBytes = 0,
                 droppedForwardPackets = 0,

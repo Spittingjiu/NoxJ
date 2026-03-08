@@ -37,7 +37,8 @@ class TcpTunForwarder(
             val key = sessionKey(packet)
             val session = sessions[key] ?: run {
                 droppedPackets += 1
-                if (!packet.rst) {
+                val shouldSendRst = !packet.rst && (packet.syn || packet.fin || packet.payloadLength > 0)
+                if (shouldSendRst) {
                     sendRstForUnknownSession(packet)
                 }
                 return false
@@ -87,14 +88,10 @@ class TcpTunForwarder(
                         flags = FLAG_ACK,
                         payload = ByteArray(0)
                     )
-                    if (!session.closeFrameSent) {
-                        DiagnosticsLog.info(
-                            TAG,
-                            "client half-close stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
-                        )
-                        transportClient.closeStream(session.streamId, "client fin", sendFrame = true)
-                        session.closeFrameSent = true
-                    }
+                    DiagnosticsLog.info(
+                        TAG,
+                        "client half-close stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
+                    )
                 }
             }
 
@@ -127,13 +124,24 @@ class TcpTunForwarder(
             val iterator = sessions.entries.iterator()
             while (iterator.hasNext()) {
                 val session = iterator.next().value
-                if (nowMs - session.lastSeenMs > idleMs) {
+                val idleDurationMs = nowMs - session.lastSeenMs
+                val timeoutMs = if (session.clientHalfClosed) {
+                    HALF_CLOSE_IDLE_TIMEOUT_MS
+                } else {
+                    idleMs
+                }
+                if (idleDurationMs > timeoutMs) {
                     if (!session.closeFrameSent) {
+                        val reason = if (session.clientHalfClosed) {
+                            "client half-close timeout"
+                        } else {
+                            "idle timeout"
+                        }
                         DiagnosticsLog.info(
                             TAG,
-                            "idle timeout stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
+                            "$reason stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
                         )
-                        transportClient.closeStream(session.streamId, "idle timeout", sendFrame = true)
+                        transportClient.closeStream(session.streamId, reason, sendFrame = true)
                         session.closeFrameSent = true
                     }
                     iterator.remove()
@@ -496,6 +504,7 @@ class TcpTunForwarder(
         private const val DEFAULT_TTL = 64
         private const val DEFAULT_WINDOW = 65535
         private const val MAX_PAYLOAD_BYTES_PER_PACKET = 1360
+        private const val HALF_CLOSE_IDLE_TIMEOUT_MS = 15_000L
 
         private const val FLAG_FIN = 0x01
         private const val FLAG_RST = 0x04

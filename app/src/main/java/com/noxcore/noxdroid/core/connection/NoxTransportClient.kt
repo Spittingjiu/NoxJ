@@ -6,7 +6,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONException
 import org.json.JSONObject
@@ -62,7 +64,8 @@ class NoxTransportClient(
     private var input: BufferedInputStream? = null
     private var output: BufferedOutputStream? = null
     private var readerJob: Job? = null
-    private var closed = false
+    private var keepaliveJob: Job? = null
+    private var terminated = false
 
     private val streams = linkedMapOf<Long, StreamBinding>()
     private val pendingOpen = linkedMapOf<Long, PendingOpen>()
@@ -72,9 +75,13 @@ class NoxTransportClient(
             if (readerJob?.isActive == true) {
                 return Result.success(Unit)
             }
-            if (closed) {
+            if (terminated) {
                 return Result.failure(IllegalStateException("transport closed"))
             }
+            closeQuietly(socket)
+            socket = null
+            input = null
+            output = null
         }
 
         val uri = parseAndValidateServerUrl(config.serverUrl)
@@ -115,6 +122,9 @@ class NoxTransportClient(
                 output = createdOutput
                 readerJob = scope.launch {
                     readLoop()
+                }
+                keepaliveJob = scope.launch {
+                    keepaliveLoop()
                 }
             }
             DiagnosticsLog.info(TAG, "transport connected and hello_ack validated")
@@ -251,7 +261,7 @@ class NoxTransportClient(
     }
 
     fun close() {
-        shutdown("client closed")
+        shutdown("client closed", terminal = true)
         scope.cancel()
     }
 
@@ -322,7 +332,7 @@ class NoxTransportClient(
         } catch (e: Exception) {
             val message = e.message ?: "read failed"
             DiagnosticsLog.warn(TAG, "transport read loop stopped: $message")
-            shutdown("transport read failed: $message")
+            shutdown("transport read failed: $message", terminal = false)
         }
     }
 
@@ -361,13 +371,35 @@ class NoxTransportClient(
         callback?.invoke(reason)
     }
 
-    private fun shutdown(reason: String) {
+    private fun keepaliveLoop() {
+        while (isActive) {
+            delay(KEEPALIVE_INTERVAL_MS)
+            if (!isConnected()) {
+                continue
+            }
+            val ping = JSONObject()
+                .put("type", "ping")
+                .put("payload", JSONObject().put("ts", System.currentTimeMillis() / 1000L))
+            writeNoxMessage(ping)
+        }
+    }
+
+    private fun shutdown(reason: String, terminal: Boolean) {
         val callbacks = mutableListOf<((String) -> Unit)>()
         synchronized(lock) {
-            if (closed) {
+            if (terminal) {
+                terminated = true
+            }
+            val alreadyShutDown = socket == null &&
+                input == null &&
+                output == null &&
+                readerJob == null &&
+                keepaliveJob == null &&
+                pendingOpen.isEmpty() &&
+                streams.isEmpty()
+            if (alreadyShutDown) {
                 return
             }
-            closed = true
             DiagnosticsLog.warn(TAG, "transport shutdown: $reason")
 
             pendingOpen.values.forEach { pending ->
@@ -384,6 +416,8 @@ class NoxTransportClient(
 
             readerJob?.cancel()
             readerJob = null
+            keepaliveJob?.cancel()
+            keepaliveJob = null
 
             closeQuietly(socket)
             socket = null
@@ -417,7 +451,7 @@ class NoxTransportClient(
             }
             true
         } catch (_: Exception) {
-            shutdown("transport write failed")
+            shutdown("transport write failed", terminal = false)
             false
         }
     }
@@ -669,6 +703,7 @@ class NoxTransportClient(
         private const val CONTROL_TIMEOUT_MS = 8_000L
         private const val MAX_CONTROL_SIZE = 64 * 1024
         private const val MAX_QUEUED_DATA_CHUNKS = 32
+        private const val KEEPALIVE_INTERVAL_MS = 20_000L
         private const val WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     }
 }

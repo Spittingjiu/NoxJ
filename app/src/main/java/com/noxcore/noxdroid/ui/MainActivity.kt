@@ -221,10 +221,15 @@ class MainActivity : AppCompatActivity() {
                     state.totalPackets,
                     state.ipv4Packets,
                     state.tcpPackets,
+                    state.activeTcpSessions,
                     state.activeForwardSessions,
+                    if (state.transportConnected) "up" else "down",
+                    state.reconnectAttempts,
+                    state.reconnectSuccesses,
                     state.uplinkBytes,
                     state.downlinkBytes,
                     state.connectFailures,
+                    state.droppedForwardPackets,
                     state.lastPacketSummary
                 )
             }

@@ -30,6 +30,9 @@ class TunPacketLoop(
         val tcpPackets: Long,
         val activeTcpSessions: Int,
         val activeForwardSessions: Int,
+        val transportConnected: Boolean,
+        val reconnectAttempts: Long,
+        val reconnectSuccesses: Long,
         val uplinkBytes: Long,
         val downlinkBytes: Long,
         val droppedForwardPackets: Long,
@@ -55,20 +58,16 @@ class TunPacketLoop(
                 config = config,
                 protectSocket = protectSocket
             )
-            val connectResult = transportClient.connect()
-            if (connectResult.isFailure) {
-                val reason = connectResult.exceptionOrNull()?.message ?: "transport connect failed"
-                DiagnosticsLog.error(TAG, "transport connect failed: $reason")
-                onError("Nox transport connect failed: $reason")
-                try {
-                    input.close()
-                } catch (_: Exception) {
-                }
-                try {
-                    output.close()
-                } catch (_: Exception) {
-                }
-                return@launch
+            var reconnectAttempts = 0L
+            var reconnectSuccesses = 0L
+            var lastReconnectAttemptMs = 0L
+
+            if (!attemptTransportConnect(transportClient, "startup")) {
+                reconnectAttempts += 1
+                lastReconnectAttemptMs = System.currentTimeMillis()
+                DiagnosticsLog.warn(TAG, "startup transport connect failed; VPN loop will keep retrying")
+            } else {
+                reconnectSuccesses += 1
             }
 
             val forwarder = TcpTunForwarder(
@@ -131,6 +130,17 @@ class TunPacketLoop(
                         }
                     }
 
+                    if (!transportClient.isConnected() &&
+                        nowMs - lastReconnectAttemptMs >= TRANSPORT_RECONNECT_INTERVAL_MS
+                    ) {
+                        reconnectAttempts += 1
+                        lastReconnectAttemptMs = nowMs
+                        val connected = attemptTransportConnect(transportClient, "runtime")
+                        if (connected) {
+                            reconnectSuccesses += 1
+                        }
+                    }
+
                     if (nowMs - lastCleanupMs >= SESSION_CLEANUP_INTERVAL_MS) {
                         tracker.expireClosedAndIdle(nowMs, SESSION_IDLE_TIMEOUT_MS)
                         forwarder.expireIdle(nowMs, FORWARD_IDLE_TIMEOUT_MS)
@@ -161,6 +171,9 @@ class TunPacketLoop(
                                 tcpPackets = tcpPackets,
                                 activeTcpSessions = tracker.activeSessionCount(),
                                 activeForwardSessions = forwardStats.activeForwardSessions,
+                                transportConnected = transportClient.isConnected(),
+                                reconnectAttempts = reconnectAttempts,
+                                reconnectSuccesses = reconnectSuccesses,
                                 uplinkBytes = forwardStats.uplinkBytes,
                                 downlinkBytes = forwardStats.downlinkBytes,
                                 droppedForwardPackets = forwardStats.droppedPackets,
@@ -175,7 +188,9 @@ class TunPacketLoop(
                 val message = e.message ?: "tunnel read failed"
                 Log.w(TAG, "TUN read loop stopped: $message")
                 DiagnosticsLog.warn(TAG, "TUN read loop stopped: $message")
-                onError(message)
+                if (isActive) {
+                    onError(message)
+                }
             } finally {
                 DiagnosticsLog.info(TAG, "leaving TUN read loop; stopping forwarder")
                 forwarder.stop()
@@ -199,6 +214,9 @@ class TunPacketLoop(
                         tcpPackets = tcpPackets,
                         activeTcpSessions = tracker.activeSessionCount(),
                         activeForwardSessions = forwardStats.activeForwardSessions,
+                        transportConnected = transportClient.isConnected(),
+                        reconnectAttempts = reconnectAttempts,
+                        reconnectSuccesses = reconnectSuccesses,
                         uplinkBytes = forwardStats.uplinkBytes,
                         downlinkBytes = forwardStats.downlinkBytes,
                         droppedForwardPackets = forwardStats.droppedPackets,
@@ -215,11 +233,26 @@ class TunPacketLoop(
         loopJob = null
     }
 
+    private fun attemptTransportConnect(
+        transportClient: NoxTransportClient,
+        phase: String
+    ): Boolean {
+        val connectResult = transportClient.connect()
+        if (connectResult.isSuccess) {
+            DiagnosticsLog.info(TAG, "transport connect succeeded phase=$phase")
+            return true
+        }
+        val reason = connectResult.exceptionOrNull()?.message ?: "transport connect failed"
+        DiagnosticsLog.warn(TAG, "transport connect failed phase=$phase reason=$reason")
+        return false
+    }
+
     companion object {
         private const val TAG = "TunPacketLoop"
         private const val STATS_EMIT_INTERVAL_MS = 1_000L
         private const val SESSION_CLEANUP_INTERVAL_MS = 10_000L
         private const val SESSION_IDLE_TIMEOUT_MS = 60_000L
         private const val FORWARD_IDLE_TIMEOUT_MS = 60_000L
+        private const val TRANSPORT_RECONNECT_INTERVAL_MS = 3_000L
     }
 }
