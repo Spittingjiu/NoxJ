@@ -113,6 +113,15 @@ class TunPacketLoop(
                     if (!transportConnected &&
                         shouldAttemptReconnect(nowMs, lastReconnectAttemptMs, urgentReconnect)
                     ) {
+                        val sinceLastAttemptMs = if (lastReconnectAttemptMs == 0L) {
+                            -1L
+                        } else {
+                            nowMs - lastReconnectAttemptMs
+                        }
+                        DiagnosticsLog.info(
+                            TAG,
+                            "runtime reconnect attempt trigger urgent_syn=$urgentReconnect since_last_ms=$sinceLastAttemptMs"
+                        )
                         reconnectAttempts += 1
                         lastReconnectAttemptMs = nowMs
                         val connected = attemptTransportConnect(transportClient, "runtime")
@@ -270,7 +279,7 @@ class TunPacketLoop(
             return true
         }
         val reason = connectResult.exceptionOrNull()?.message ?: "transport connect failed"
-        DiagnosticsLog.warn(TAG, "transport connect failed phase=$phase reason=$reason")
+        DiagnosticsLog.warn(TAG, "transport connect failed phase=$phase reason=$reason; control path remains disconnected")
         return false
     }
 

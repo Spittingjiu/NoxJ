@@ -43,6 +43,10 @@ class TcpTunForwarder(
             }
 
             if (packet.rst) {
+                DiagnosticsLog.info(
+                    TAG,
+                    "close decision stream=${session.streamId} initiator=client_rst send_frame=true"
+                )
                 closeSession(session, "client rst", sendCloseFrame = true)
                 return true
             }
@@ -195,6 +199,10 @@ class TcpTunForwarder(
                         continue
                     }
                     if (!session.closeFrameSent) {
+                        DiagnosticsLog.info(
+                            TAG,
+                            "close decision stream=${session.streamId} initiator=final_ack_timeout send_frame=false"
+                        )
                         transportClient.closeStream(session.streamId, "final ack timeout", sendFrame = false)
                         session.closeFrameSent = true
                     }
@@ -211,6 +219,10 @@ class TcpTunForwarder(
     fun stop() {
         synchronized(sessions) {
             sessions.values.forEach { session ->
+                DiagnosticsLog.info(
+                    TAG,
+                    "close decision stream=${session.streamId} initiator=forwarder_stop send_frame=true"
+                )
                 transportClient.closeStream(session.streamId, "forwarder stopped", sendFrame = true)
             }
             sessions.clear()
@@ -365,12 +377,20 @@ class TcpTunForwarder(
             )
         }
         if (!session.closeFrameSent) {
+            DiagnosticsLog.info(
+                TAG,
+                "close decision stream=${session.streamId} initiator=initiate_local_fin send_frame=$sendCloseFrame"
+            )
             transportClient.closeStream(session.streamId, closeFrameReason, sendFrame = sendCloseFrame)
             session.closeFrameSent = true
         }
     }
 
     private fun closeSession(session: ForwardSession, reason: String, sendCloseFrame: Boolean) {
+        DiagnosticsLog.info(
+            TAG,
+            "close decision stream=${session.streamId} initiator=close_session send_frame=$sendCloseFrame reason=$reason"
+        )
         if (sendCloseFrame) {
             if (!session.closeFrameSent) {
                 transportClient.closeStream(session.streamId, reason, sendFrame = true)
@@ -521,12 +541,13 @@ class TcpTunForwarder(
                 session.firstWriteFailureAtMs = nowMs
             }
             if (shouldTerminateForWriteFailure(session, nowMs)) {
+                val connected = transportClient.isConnected()
                 DiagnosticsLog.warn(
                     TAG,
-                    "transport write failed terminal stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
+                    "transport write failed terminal stream=${session.streamId} connected=$connected ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
                 )
                 sendRst(session)
-                closeSession(session, "transport write failed", sendCloseFrame = true)
+                closeSession(session, "transport write failed", sendCloseFrame = connected)
             } else {
                 DiagnosticsLog.warn(
                     TAG,
@@ -649,14 +670,15 @@ class TcpTunForwarder(
     private fun add32(value: Long, delta: Int): Long = (value + delta.toLong()) and 0xFFFF_FFFFL
 
     private fun shouldTerminateForWriteFailure(session: ForwardSession, nowMs: Long): Boolean {
-        if (transportClient.isConnected()) {
-            return session.consecutiveWriteFailures >= MAX_CONNECTED_WRITE_FAILURES
-        }
         val firstFailureMs = session.firstWriteFailureAtMs
         if (firstFailureMs == 0L) {
             return false
         }
         val failureDurationMs = nowMs - firstFailureMs
+        if (transportClient.isConnected()) {
+            return session.consecutiveWriteFailures >= MAX_CONNECTED_WRITE_FAILURES &&
+                failureDurationMs >= CONNECTED_WRITE_FAILURE_GRACE_MS
+        }
         return session.consecutiveWriteFailures >= MAX_TRANSIENT_WRITE_FAILURES &&
             failureDurationMs >= TRANSIENT_WRITE_FAILURE_GRACE_MS
     }
@@ -695,8 +717,9 @@ class TcpTunForwarder(
         private const val MAX_PAYLOAD_BYTES_PER_PACKET = 1360
         private const val HALF_CLOSE_IDLE_TIMEOUT_MS = 60_000L
         private const val FINAL_ACK_IDLE_TIMEOUT_MS = 120_000L
-        private const val MAX_CONNECTED_WRITE_FAILURES = 3
-        private const val MAX_TRANSIENT_WRITE_FAILURES = 5
+        private const val MAX_CONNECTED_WRITE_FAILURES = 6
+        private const val MAX_TRANSIENT_WRITE_FAILURES = 7
+        private const val CONNECTED_WRITE_FAILURE_GRACE_MS = 2_500L
         private const val TRANSIENT_WRITE_FAILURE_GRACE_MS = 6_000L
         private const val MAX_OUT_OF_ORDER_SEGMENTS = 64
         private const val MAX_OUT_OF_ORDER_BUFFER_BYTES = 256 * 1024

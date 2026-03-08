@@ -32,6 +32,14 @@ class NoxTransportClient(
     private val config: NoxClientConfig,
     private val protectSocket: (Socket) -> Boolean
 ) {
+    enum class StreamCloseSource {
+        LOCAL_API,
+        LOCAL_OPEN_TIMEOUT,
+        LOCAL_OPEN_REJECTED,
+        LOCAL_BUFFER_OVERFLOW,
+        REMOTE_CLOSE_FRAME,
+        TRANSPORT_SHUTDOWN
+    }
 
     data class OpenStreamResult(
         val streamId: Long,
@@ -173,19 +181,39 @@ class NoxTransportClient(
             return OpenStreamResult(streamId = streamId, error = "transport write failed")
         }
 
-        val completed = openWait.latch.await(CONTROL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        var completed = openWait.latch.await(CONTROL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        if (!completed && isConnected()) {
+            DiagnosticsLog.warn(
+                TAG,
+                "open stream still pending stream=$streamId target=$target after=${CONTROL_TIMEOUT_MS}ms; entering timeout grace=${OPEN_TIMEOUT_GRACE_MS}ms"
+            )
+            completed = openWait.latch.await(OPEN_TIMEOUT_GRACE_MS, TimeUnit.MILLISECONDS)
+            if (completed) {
+                DiagnosticsLog.info(TAG, "open stream completed during grace stream=$streamId target=$target")
+            }
+        }
         synchronized(lock) {
             pendingOpen.remove(streamId)
         }
 
         if (!completed) {
-            closeStream(streamId, "open timeout", sendFrame = true)
+            closeStream(
+                streamId = streamId,
+                reason = "open timeout",
+                sendFrame = false,
+                source = StreamCloseSource.LOCAL_OPEN_TIMEOUT
+            )
             DiagnosticsLog.warn(TAG, "open stream timeout stream=$streamId target=$target")
             return OpenStreamResult(streamId = streamId, error = "open stream timeout")
         }
 
         if (!openWait.accepted) {
-            closeStream(streamId, openWait.error, sendFrame = false)
+            closeStream(
+                streamId = streamId,
+                reason = openWait.error,
+                sendFrame = false,
+                source = StreamCloseSource.LOCAL_OPEN_REJECTED
+            )
             DiagnosticsLog.warn(TAG, "open stream rejected stream=$streamId target=$target reason=${openWait.error}")
             return OpenStreamResult(streamId = streamId, error = openWait.error)
         }
@@ -236,11 +264,24 @@ class NoxTransportClient(
         return writeNoxMessage(envelope)
     }
 
-    fun closeStream(streamId: Long, reason: String, sendFrame: Boolean = true) {
+    fun closeStream(
+        streamId: Long,
+        reason: String,
+        sendFrame: Boolean = true,
+        source: StreamCloseSource = StreamCloseSource.LOCAL_API,
+        notifyLocalCallback: Boolean = false
+    ) {
+        var callback: ((String) -> Unit)? = null
         synchronized(lock) {
-            streams.remove(streamId)
+            val stream = streams.remove(streamId)
+            if (notifyLocalCallback) {
+                callback = stream?.onClose
+            }
         }
-        DiagnosticsLog.info(TAG, "closing stream=$streamId send_frame=$sendFrame reason=$reason")
+        DiagnosticsLog.info(
+            TAG,
+            "closing stream=$streamId source=$source send_frame=$sendFrame reason=$reason"
+        )
 
         if (sendFrame) {
             val payload = JSONObject()
@@ -250,6 +291,10 @@ class NoxTransportClient(
                 .put("type", "close")
                 .put("payload", payload)
             writeNoxMessage(envelope)
+        }
+        if (notifyLocalCallback) {
+            DiagnosticsLog.info(TAG, "delivering close callback stream=$streamId source=$source reason=$reason")
+            callback?.invoke(reason)
         }
     }
 
@@ -307,8 +352,15 @@ class NoxTransportClient(
                     "close" -> {
                         val streamId = payload.optLong("stream_id", 0L)
                         val reason = payload.optString("error")
-                        DiagnosticsLog.info(TAG, "received remote close stream=$streamId reason=${reason.ifBlank { "remote closed" }}")
-                        deliverClose(streamId, reason.ifBlank { "remote closed" })
+                        DiagnosticsLog.info(
+                            TAG,
+                            "received remote close stream=$streamId source=${StreamCloseSource.REMOTE_CLOSE_FRAME} reason=${reason.ifBlank { "remote closed" }}"
+                        )
+                        deliverClose(
+                            streamId = streamId,
+                            reason = reason.ifBlank { "remote closed" },
+                            source = StreamCloseSource.REMOTE_CLOSE_FRAME
+                        )
                     }
 
                     "ping" -> {
@@ -350,13 +402,19 @@ class NoxTransportClient(
             }
         }
         if (shouldForceClose) {
-            deliverClose(streamId, "stream buffer overflow")
+            closeStream(
+                streamId = streamId,
+                reason = "stream buffer overflow",
+                sendFrame = true,
+                source = StreamCloseSource.LOCAL_BUFFER_OVERFLOW,
+                notifyLocalCallback = true
+            )
             return
         }
         callback?.invoke(data)
     }
 
-    private fun deliverClose(streamId: Long, reason: String) {
+    private fun deliverClose(streamId: Long, reason: String, source: StreamCloseSource) {
         var callback: ((String) -> Unit)? = null
         synchronized(lock) {
             val stream = streams[streamId] ?: return
@@ -367,6 +425,7 @@ class NoxTransportClient(
             }
             streams.remove(streamId)
         }
+        DiagnosticsLog.info(TAG, "delivering close callback stream=$streamId source=$source reason=$reason")
         callback?.invoke(reason)
     }
 
@@ -384,7 +443,7 @@ class NoxTransportClient(
     }
 
     private fun shutdown(reason: String, terminal: Boolean) {
-        val callbacks = mutableListOf<((String) -> Unit)>()
+        val callbacks = mutableListOf<Pair<Long, (String) -> Unit>>()
         synchronized(lock) {
             if (terminal) {
                 terminated = true
@@ -408,8 +467,8 @@ class NoxTransportClient(
             }
             pendingOpen.clear()
 
-            streams.values.forEach { stream ->
-                stream.onClose?.let { callbacks += it }
+            streams.forEach { (streamId, stream) ->
+                stream.onClose?.let { callbacks += streamId to it }
             }
             streams.clear()
 
@@ -424,7 +483,11 @@ class NoxTransportClient(
             output = null
         }
 
-        callbacks.forEach { callback ->
+        callbacks.forEach { (streamId, callback) ->
+            DiagnosticsLog.info(
+                TAG,
+                "delivering close callback stream=$streamId source=${StreamCloseSource.TRANSPORT_SHUTDOWN} reason=$reason"
+            )
             callback(reason)
         }
     }
@@ -702,6 +765,7 @@ class NoxTransportClient(
         private const val CONTROL_TIMEOUT_MS = 8_000L
         private const val MAX_CONTROL_SIZE = 64 * 1024
         private const val MAX_QUEUED_DATA_CHUNKS = 32
+        private const val OPEN_TIMEOUT_GRACE_MS = 4_000L
         private const val KEEPALIVE_INTERVAL_MS = 20_000L
         private const val WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     }
