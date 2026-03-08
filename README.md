@@ -14,8 +14,10 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
   - Foreground service notification + stop action
   - Real `VpnService.Builder` session/interface setup (`establish()`)
   - Safe split-route startup mode (not global capture) to preserve baseline connectivity while forwarding remains constrained
+  - Controlled public-routing mode with explicit IPv4 CIDR allowlist (incremental public internet routing without full `0.0.0.0/0`)
   - Explicit app-level VPN bypass to prevent Nox control/handshake sockets from self-capture loops
   - Start/stop control from UI
+  - Persistent routing preferences (safe mode vs controlled public + CIDR list)
 - First real forwarding path is implemented:
   - Real TUN read + write loop
   - IPv4/TCP parse and per-flow session tracking
@@ -32,7 +34,10 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
 
 ## Important current limits (honest status)
 - This is not full VPN usability yet.
-- Current routing mode is intentionally **safe split-tunnel**, not full `0.0.0.0/0` global routing.
+- Routing is still intentionally incremental:
+  - safe mode: private ranges only
+  - controlled mode: private ranges + user-provided public IPv4 CIDR allowlist
+  - no blind global `0.0.0.0/0` routing yet
 - Forwarding is limited to a constrained IPv4/TCP subset.
 - UDP is not forwarded.
 - TCP handling is minimal and does not implement full RFC-grade behavior (retransmission/window management/selective ACK/etc.).
@@ -68,6 +73,7 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
 - `app/src/main/java/com/noxcore/noxdroid/core/connection/NoxTransportClient.kt`: long-lived WSS Nox transport client (`hello`, `open/open_resp`, `data`, `close`, `ping/pong`)
 - `app/src/main/java/com/noxcore/noxdroid/core/vpn/NoxVpnService.kt`: foreground `VpnService` + TUN packet loop wiring
 - `app/src/main/java/com/noxcore/noxdroid/core/vpn/NoxVpnState.kt`: VPN runtime state model
+- `app/src/main/java/com/noxcore/noxdroid/core/vpn/VpnRoutingConfig.kt`: routing mode model, CIDR parser, and routing preference store
 - `app/src/main/java/com/noxcore/noxdroid/core/vpn/dataplane/PacketParser.kt`: minimal IPv4/TCP parser foundation
 - `app/src/main/java/com/noxcore/noxdroid/core/vpn/dataplane/TcpSessionTracker.kt`: TCP flow/session mapping groundwork
 - `app/src/main/java/com/noxcore/noxdroid/core/vpn/dataplane/TcpTunForwarder.kt`: constrained TCP forwarding between TUN and Nox transport streams

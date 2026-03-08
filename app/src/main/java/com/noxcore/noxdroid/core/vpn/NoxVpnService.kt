@@ -9,6 +9,7 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.noxcore.noxdroid.R
 import com.noxcore.noxdroid.core.connection.NoxClientConfigStore
@@ -64,9 +65,36 @@ class NoxVpnService : VpnService() {
         }
 
         isStopping = false
+        val routingConfig = NoxVpnRoutingConfigStore.load(this)
+        val parsedPublicRoutes = VpnRoutingParser.parseIpv4Cidrs(routingConfig.publicIpv4CidrsRaw)
+        val routeProfileLabel = when (routingConfig.mode) {
+            VpnRoutingMode.SAFE_PRIVATE_SPLIT -> "safe private split-route"
+            VpnRoutingMode.CONTROLLED_PUBLIC -> "controlled public allowlist"
+        }
+
+        if (routingConfig.mode == VpnRoutingMode.CONTROLLED_PUBLIC &&
+            parsedPublicRoutes.routes.isEmpty()
+        ) {
+            updateState(
+                NoxVpnState.Error(
+                    "Controlled public mode requires at least one valid IPv4 CIDR route"
+                )
+            )
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        if (parsedPublicRoutes.invalidEntries.isNotEmpty()) {
+            Log.w(
+                TAG,
+                "Ignoring invalid public CIDRs: ${parsedPublicRoutes.invalidEntries.joinToString(",")}"
+            )
+        }
+
         updateState(NoxVpnState.Starting)
         ensureNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("Starting VPN session (safe split-route mode)"))
+        startForeground(NOTIFICATION_ID, buildNotification("Starting VPN session ($routeProfileLabel)"))
 
         val clientConfig = NoxClientConfigStore.load(this)
         if (clientConfig == null) {
@@ -99,9 +127,14 @@ class NoxVpnService : VpnService() {
             return
         }
 
-        // Safe mode: avoid global 0.0.0.0/0 capture until forwarding supports full internet traffic.
+        // Preserve control-path safety while expanding routing incrementally.
         SAFE_SPLIT_TUNNEL_ROUTES.forEach { (network, prefix) ->
             builder.addRoute(network, prefix)
+        }
+        if (routingConfig.mode == VpnRoutingMode.CONTROLLED_PUBLIC) {
+            parsedPublicRoutes.routes.forEach { (network, prefix) ->
+                builder.addRoute(network, prefix)
+            }
         }
 
         val tunnel = builder.establish()
@@ -134,7 +167,7 @@ class NoxVpnService : VpnService() {
                 )
                 updateState(runningState)
                 updateNotification(
-                    "Forwarding tcp sessions=${stats.activeForwardSessions} " +
+                    "[$routeProfileLabel] forwarding tcp sessions=${stats.activeForwardSessions} " +
                         "up=${stats.uplinkBytes}B down=${stats.downlinkBytes}B " +
                         "connect_fail=${stats.connectFailures}"
                 )
@@ -168,7 +201,7 @@ class NoxVpnService : VpnService() {
             )
         )
 
-        updateNotification("VPN active (safe split-route mode). Constrained IPv4/TCP via Nox transport.")
+        updateNotification("VPN active ($routeProfileLabel). Constrained IPv4/TCP via Nox transport.")
     }
 
     private fun stopVpn(reason: String) {
@@ -253,6 +286,7 @@ class NoxVpnService : VpnService() {
     }
 
     companion object {
+        private const val TAG = "NoxVpnService"
         const val ACTION_START = "com.noxcore.noxdroid.vpn.START"
         const val ACTION_STOP = "com.noxcore.noxdroid.vpn.STOP"
 

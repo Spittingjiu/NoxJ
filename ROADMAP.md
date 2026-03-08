@@ -18,13 +18,15 @@
 - Routing safety hardening: implemented for this iteration:
   - removed global `0.0.0.0/0` capture for now
   - enabled safe split-route startup profile to preserve baseline internet connectivity
+  - added controlled public-routing mode (private ranges + explicit public IPv4 CIDR allowlist)
   - app traffic is disallowed from VPN interface to protect Nox control/handshake path from self-capture
+  - routing mode + CIDR allowlist are persisted and validated before VPN start
 
 ## Next step (priority)
 - Harden the new Nox transport forwarding path:
   - add transport keepalive/reconnect and session cleanup on transport resets
   - improve open/data/close error propagation and metrics
-  - evaluate fallback/debug mode policy for local direct sockets (currently removed from main path)
+  - improve controlled public-routing UX (profiles, safe defaults, and route diagnostics)
 
 ## Follow-on steps
 - TCP correctness and resilience:

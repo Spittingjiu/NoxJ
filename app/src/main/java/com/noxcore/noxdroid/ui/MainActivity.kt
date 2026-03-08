@@ -13,14 +13,21 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.textfield.TextInputLayout
 import com.noxcore.noxdroid.R
 import com.noxcore.noxdroid.core.connection.ConnectionState
 import com.noxcore.noxdroid.core.connection.NoxClientConfig
 import com.noxcore.noxdroid.core.connection.NoxClientConfigStore
 import com.noxcore.noxdroid.core.connection.SocketConnectionService
+import com.noxcore.noxdroid.core.vpn.NoxVpnRoutingConfigStore
 import com.noxcore.noxdroid.core.vpn.NoxVpnService
 import com.noxcore.noxdroid.core.vpn.NoxVpnState
+import com.noxcore.noxdroid.core.vpn.ParsedIpv4Routes
+import com.noxcore.noxdroid.core.vpn.VpnRoutingConfig
+import com.noxcore.noxdroid.core.vpn.VpnRoutingMode
+import com.noxcore.noxdroid.core.vpn.VpnRoutingParser
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -33,6 +40,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var clientIdEditText: TextInputEditText
     private lateinit var connectButton: MaterialButton
     private lateinit var vpnButton: MaterialButton
+    private lateinit var routingModeSwitch: MaterialSwitch
+    private lateinit var publicRoutesInputLayout: TextInputLayout
+    private lateinit var publicRoutesEditText: TextInputEditText
     private lateinit var statusText: TextView
     private lateinit var vpnStatusText: TextView
 
@@ -66,6 +76,9 @@ class MainActivity : AppCompatActivity() {
         clientIdEditText = findViewById(R.id.clientIdEditText)
         connectButton = findViewById(R.id.connectButton)
         vpnButton = findViewById(R.id.vpnButton)
+        routingModeSwitch = findViewById(R.id.routingModeSwitch)
+        publicRoutesInputLayout = findViewById(R.id.publicRoutesInputLayout)
+        publicRoutesEditText = findViewById(R.id.publicRoutesEditText)
         statusText = findViewById(R.id.statusText)
         vpnStatusText = findViewById(R.id.vpnStatusText)
 
@@ -73,6 +86,17 @@ class MainActivity : AppCompatActivity() {
             serverEditText.setText(cfg.serverUrl)
             secretEditText.setText(cfg.sharedSecret)
             clientIdEditText.setText(cfg.clientId)
+        }
+        NoxVpnRoutingConfigStore.load(this).let { routing ->
+            routingModeSwitch.isChecked = routing.mode == VpnRoutingMode.CONTROLLED_PUBLIC
+            if (routing.publicIpv4CidrsRaw.isNotBlank()) {
+                publicRoutesEditText.setText(routing.publicIpv4CidrsRaw)
+            }
+        }
+        updateRoutingUi()
+
+        routingModeSwitch.setOnCheckedChangeListener { _, _ ->
+            updateRoutingUi()
         }
 
         connectButton.setOnClickListener {
@@ -106,6 +130,11 @@ class MainActivity : AppCompatActivity() {
                         setVpnStatus(
                             NoxVpnState.Error("Server URL, shared secret, and client ID are required")
                         )
+                        return@setOnClickListener
+                    }
+                    val routingValidationError = persistRoutingConfigOrError()
+                    if (routingValidationError != null) {
+                        setVpnStatus(NoxVpnState.Error(routingValidationError))
                         return@setOnClickListener
                     }
                     requestAndStartVpn()
@@ -200,6 +229,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateRoutingUi() {
+        val controlledPublicMode = routingModeSwitch.isChecked
+        publicRoutesInputLayout.isEnabled = controlledPublicMode
+        publicRoutesEditText.isEnabled = controlledPublicMode
+        publicRoutesEditText.alpha = if (controlledPublicMode) 1f else 0.6f
+    }
+
     private fun persistConfig(serverUrl: String, secret: String, clientId: String): Boolean {
         if (serverUrl.isBlank() || secret.isBlank() || clientId.isBlank()) {
             return false
@@ -213,5 +249,39 @@ class MainActivity : AppCompatActivity() {
             )
         )
         return true
+    }
+
+    private fun persistRoutingConfigOrError(): String? {
+        val mode = if (routingModeSwitch.isChecked) {
+            VpnRoutingMode.CONTROLLED_PUBLIC
+        } else {
+            VpnRoutingMode.SAFE_PRIVATE_SPLIT
+        }
+        val rawPublicRoutes = publicRoutesEditText.text?.toString().orEmpty().trim()
+
+        if (mode == VpnRoutingMode.CONTROLLED_PUBLIC) {
+            val parsedRoutes = VpnRoutingParser.parseIpv4Cidrs(rawPublicRoutes)
+            validateControlledRoutes(parsedRoutes)?.let { return it }
+        }
+
+        NoxVpnRoutingConfigStore.save(
+            this,
+            VpnRoutingConfig(
+                mode = mode,
+                publicIpv4CidrsRaw = rawPublicRoutes
+            )
+        )
+        return null
+    }
+
+    private fun validateControlledRoutes(parsedRoutes: ParsedIpv4Routes): String? {
+        if (parsedRoutes.invalidEntries.isNotEmpty()) {
+            val bad = parsedRoutes.invalidEntries.take(3).joinToString(", ")
+            return "Invalid IPv4 CIDR entries: $bad"
+        }
+        if (parsedRoutes.routes.isEmpty()) {
+            return "Controlled public routing requires at least one IPv4 CIDR route"
+        }
+        return null
     }
 }

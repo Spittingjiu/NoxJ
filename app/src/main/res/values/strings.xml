@@ -7,11 +7,14 @@
     <string name="hint_client_id">Client ID</string>
     <string name="action_run_handshake_test">Run Handshake Test</string>
     <string name="label_vpn">VPN</string>
+    <string name="label_controlled_public_mode">Enable Controlled Public Routing</string>
+    <string name="hint_public_routes">Public IPv4 CIDR allowlist (comma/newline separated)</string>
+    <string name="default_public_routes">1.1.1.1/32, 8.8.8.8/32</string>
     <string name="action_start_vpn">Start VPN</string>
     <string name="action_stop_vpn">Stop VPN</string>
     <string name="status_vpn_idle">VPN idle (not running)</string>
     <string name="status_vpn_starting">VPN starting...</string>
-    <string name="status_vpn_running_forwarding">VPN active (safe split-route mode; constrained IPv4/TCP via Nox open/data/close). packets=%1$d ipv4=%2$d tcp=%3$d forward_sessions=%4$d up=%5$dB down=%6$dB connect_fail=%7$d last=%8$s</string>
+    <string name="status_vpn_running_forwarding">VPN active (constrained IPv4/TCP via Nox open/data/close). packets=%1$d ipv4=%2$d tcp=%3$d forward_sessions=%4$d up=%5$dB down=%6$dB connect_fail=%7$d last=%8$s</string>
     <string name="status_vpn_stopping">VPN stopping...</string>
     <string name="status_vpn_error">VPN error: %1$s</string>
     <string name="status_vpn_permission_denied">VPN permission denied</string>

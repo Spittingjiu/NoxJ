@@ -109,6 +109,36 @@
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toBottomOf="@id/connectButton" />
 
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/routingModeSwitch"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/label_controlled_public_mode"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/vpnLabel" />
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/publicRoutesInputLayout"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="@string/hint_public_routes"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/routingModeSwitch">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/publicRoutesEditText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textMultiLine|textNoSuggestions"
+                android:lines="3"
+                android:maxLines="5"
+                android:text="@string/default_public_routes" />
+        </com.google.android.material.textfield.TextInputLayout>
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/vpnButton"
             android:layout_width="0dp"
@@ -117,7 +147,7 @@
             android:text="@string/action_start_vpn"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@id/vpnLabel" />
+            app:layout_constraintTop_toBottomOf="@id/publicRoutesInputLayout" />
 
         <TextView
             android:id="@+id/vpnStatusText"
