@@ -20,4 +20,6 @@
     <string name="status_vpn_permission_denied">VPN permission denied</string>
     <string name="label_status">Status</string>
     <string name="status_idle">Idle: ready to test WSS hello/hello_ack</string>
+    <string name="label_diagnostics">VPN diagnostics</string>
+    <string name="status_diag_empty">No diagnostics yet</string>
 </resources>

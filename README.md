@@ -29,8 +29,14 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
     - handles stream close via Nox `close` frames
     - synthesizes TCP responses back into TUN (SYN-ACK/ACK/PSH/FIN)
     - basic TCP half-close behavior to avoid immediate teardown on first FIN
+    - downlink TCP payload segmentation (smaller injected packets instead of oversized single writes)
+    - TCP RST synthesis for failed stream opens / unknown sessions so client sockets fail fast instead of hanging
     - tracks uplink/downlink bytes and connect failures
   - VPN service now uses saved Nox credentials from UI fields (server URL, shared secret, client ID)
+- Internal diagnostics are now implemented for VPN data plane and Nox transport:
+  - persisted log file at app-private `files/nox_vpn_diagnostics.log` (rotated)
+  - in-app diagnostics panel with recent events
+  - actionable events for transport connect/open/close failures, forwarder session lifecycle, packet drop/open-failure growth
 
 ## Important current limits (honest status)
 - This is not full VPN usability yet.
@@ -40,6 +46,7 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
   - no blind global `0.0.0.0/0` routing yet
 - Forwarding is limited to a constrained IPv4/TCP subset.
 - UDP is not forwarded.
+- DNS over UDP is therefore not available through the VPN data plane yet.
 - TCP handling is minimal and does not implement full RFC-grade behavior (retransmission/window management/selective ACK/etc.).
 - TCP close sequencing is improved but still simplified (no full FIN_WAIT/TIME_WAIT state machine).
 - Nox data-plane support is currently the first honest subset only:
@@ -71,6 +78,7 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
 - `app/src/main/java/com/noxcore/noxdroid/core/connection/SocketConnectionService.kt`: WSS + Nox `hello`/`hello_ack` handshake probe
 - `app/src/main/java/com/noxcore/noxdroid/core/connection/NoxClientConfigStore.kt`: persistent server/secret/client ID store used by handshake + VPN
 - `app/src/main/java/com/noxcore/noxdroid/core/connection/NoxTransportClient.kt`: long-lived WSS Nox transport client (`hello`, `open/open_resp`, `data`, `close`, `ping/pong`)
+- `app/src/main/java/com/noxcore/noxdroid/core/diagnostics/DiagnosticsLog.kt`: persisted + in-app diagnostics log pipeline for VPN/transport runtime
 - `app/src/main/java/com/noxcore/noxdroid/core/vpn/NoxVpnService.kt`: foreground `VpnService` + TUN packet loop wiring
 - `app/src/main/java/com/noxcore/noxdroid/core/vpn/NoxVpnState.kt`: VPN runtime state model
 - `app/src/main/java/com/noxcore/noxdroid/core/vpn/VpnRoutingConfig.kt`: routing mode model, CIDR parser, and routing preference store

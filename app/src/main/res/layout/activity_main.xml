@@ -178,10 +178,34 @@
             android:layout_marginTop="8dp"
             android:text="@string/status_idle"
             android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
-            app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toBottomOf="@id/statusLabel" />
+
+        <TextView
+            android:id="@+id/diagnosticsLabel"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/label_diagnostics"
+            android:textAppearance="@style/TextAppearance.Material3.BodyLarge"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/statusText" />
+
+        <TextView
+            android:id="@+id/diagnosticsText"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:fontFamily="monospace"
+            android:maxLines="16"
+            android:text="@string/status_diag_empty"
+            android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/diagnosticsLabel" />
 
     </androidx.constraintlayout.widget.ConstraintLayout>
 </ScrollView>

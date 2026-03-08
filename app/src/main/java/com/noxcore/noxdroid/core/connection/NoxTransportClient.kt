@@ -1,6 +1,7 @@
 package com.noxcore.noxdroid.core.connection
 
 import android.util.Log
+import com.noxcore.noxdroid.core.diagnostics.DiagnosticsLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -92,6 +93,7 @@ class NoxTransportClient(
         }
 
         return try {
+            DiagnosticsLog.info(TAG, "connecting transport to $host:$port")
             createdSocket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
             createdSocket.startHandshake()
             val createdInput = BufferedInputStream(createdSocket.inputStream)
@@ -115,8 +117,10 @@ class NoxTransportClient(
                     readLoop()
                 }
             }
+            DiagnosticsLog.info(TAG, "transport connected and hello_ack validated")
             Result.success(Unit)
         } catch (e: Exception) {
+            DiagnosticsLog.error(TAG, "transport connect failed: ${e.message ?: "unknown"}")
             closeQuietly(createdSocket)
             Result.failure(e)
         }
@@ -156,6 +160,7 @@ class NoxTransportClient(
                 pendingOpen.remove(streamId)
                 streams.remove(streamId)
             }
+            DiagnosticsLog.warn(TAG, "open stream write failed stream=$streamId target=$target")
             return OpenStreamResult(streamId = streamId, error = "transport write failed")
         }
 
@@ -166,11 +171,13 @@ class NoxTransportClient(
 
         if (!completed) {
             closeStream(streamId, "open timeout", sendFrame = true)
+            DiagnosticsLog.warn(TAG, "open stream timeout stream=$streamId target=$target")
             return OpenStreamResult(streamId = streamId, error = "open stream timeout")
         }
 
         if (!openWait.accepted) {
             closeStream(streamId, openWait.error, sendFrame = false)
+            DiagnosticsLog.warn(TAG, "open stream rejected stream=$streamId target=$target reason=${openWait.error}")
             return OpenStreamResult(streamId = streamId, error = openWait.error)
         }
 
@@ -224,6 +231,7 @@ class NoxTransportClient(
         synchronized(lock) {
             streams.remove(streamId)
         }
+        DiagnosticsLog.info(TAG, "closing stream=$streamId send_frame=$sendFrame reason=$reason")
 
         if (sendFrame) {
             val payload = JSONObject()
@@ -263,6 +271,9 @@ class NoxTransportClient(
                                 pending.accepted = payload.optBoolean("ok", false)
                                 pending.error = payload.optString("error").ifBlank { "open failed" }
                                 pending.latch.countDown()
+                                if (!pending.accepted) {
+                                    DiagnosticsLog.warn(TAG, "open_resp rejected stream=$streamId reason=${pending.error}")
+                                }
                             }
                         }
                     }
@@ -287,6 +298,7 @@ class NoxTransportClient(
                     "close" -> {
                         val streamId = payload.optLong("stream_id", 0L)
                         val reason = payload.optString("error")
+                        DiagnosticsLog.info(TAG, "received remote close stream=$streamId reason=${reason.ifBlank { "remote closed" }}")
                         deliverClose(streamId, reason.ifBlank { "remote closed" })
                     }
 
@@ -309,6 +321,7 @@ class NoxTransportClient(
             }
         } catch (e: Exception) {
             val message = e.message ?: "read failed"
+            DiagnosticsLog.warn(TAG, "transport read loop stopped: $message")
             shutdown("transport read failed: $message")
         }
     }
@@ -355,6 +368,7 @@ class NoxTransportClient(
                 return
             }
             closed = true
+            DiagnosticsLog.warn(TAG, "transport shutdown: $reason")
 
             pendingOpen.values.forEach { pending ->
                 pending.accepted = false

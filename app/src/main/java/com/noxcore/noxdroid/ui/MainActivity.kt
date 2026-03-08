@@ -21,6 +21,7 @@ import com.noxcore.noxdroid.core.connection.ConnectionState
 import com.noxcore.noxdroid.core.connection.NoxClientConfig
 import com.noxcore.noxdroid.core.connection.NoxClientConfigStore
 import com.noxcore.noxdroid.core.connection.SocketConnectionService
+import com.noxcore.noxdroid.core.diagnostics.DiagnosticsLog
 import com.noxcore.noxdroid.core.vpn.NoxVpnRoutingConfigStore
 import com.noxcore.noxdroid.core.vpn.NoxVpnService
 import com.noxcore.noxdroid.core.vpn.NoxVpnState
@@ -45,6 +46,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var publicRoutesEditText: TextInputEditText
     private lateinit var statusText: TextView
     private lateinit var vpnStatusText: TextView
+    private lateinit var diagnosticsText: TextView
 
     private var activeJob: Job? = null
     private var currentVpnState: NoxVpnState = NoxVpnState.Idle
@@ -81,6 +83,8 @@ class MainActivity : AppCompatActivity() {
         publicRoutesEditText = findViewById(R.id.publicRoutesEditText)
         statusText = findViewById(R.id.statusText)
         vpnStatusText = findViewById(R.id.vpnStatusText)
+        diagnosticsText = findViewById(R.id.diagnosticsText)
+        DiagnosticsLog.initialize(applicationContext)
 
         NoxClientConfigStore.load(this)?.let { cfg ->
             serverEditText.setText(cfg.serverUrl)
@@ -146,6 +150,14 @@ class MainActivity : AppCompatActivity() {
             repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
                 NoxVpnService.vpnState.collect { state ->
                     setVpnStatus(state)
+                }
+            }
+        }
+
+        lifecycleScope.launch {
+            repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+                DiagnosticsLog.tailText.collect { text ->
+                    diagnosticsText.text = text.ifBlank { getString(R.string.status_diag_empty) }
                 }
             }
         }

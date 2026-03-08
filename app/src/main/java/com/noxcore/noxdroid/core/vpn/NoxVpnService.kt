@@ -13,6 +13,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.noxcore.noxdroid.R
 import com.noxcore.noxdroid.core.connection.NoxClientConfigStore
+import com.noxcore.noxdroid.core.diagnostics.DiagnosticsLog
 import com.noxcore.noxdroid.core.vpn.dataplane.TunPacketLoop
 import com.noxcore.noxdroid.ui.MainActivity
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,7 +45,9 @@ class NoxVpnService : VpnService() {
     }
 
     private fun startVpn() {
+        DiagnosticsLog.initialize(applicationContext)
         if (tunnelFd != null) {
+            DiagnosticsLog.info(TAG, "start requested while VPN already running")
             updateState(
                 NoxVpnState.RunningForwarding(
                     sessionName = SESSION_NAME,
@@ -75,6 +78,7 @@ class NoxVpnService : VpnService() {
         if (routingConfig.mode == VpnRoutingMode.CONTROLLED_PUBLIC &&
             parsedPublicRoutes.routes.isEmpty()
         ) {
+            DiagnosticsLog.warn(TAG, "controlled public mode rejected: no valid public routes")
             updateState(
                 NoxVpnState.Error(
                     "Controlled public mode requires at least one valid IPv4 CIDR route"
@@ -90,7 +94,15 @@ class NoxVpnService : VpnService() {
                 TAG,
                 "Ignoring invalid public CIDRs: ${parsedPublicRoutes.invalidEntries.joinToString(",")}"
             )
+            DiagnosticsLog.warn(
+                TAG,
+                "invalid public CIDRs ignored: ${parsedPublicRoutes.invalidEntries.joinToString(",")}"
+            )
         }
+        DiagnosticsLog.info(
+            TAG,
+            "starting VPN mode=$routeProfileLabel public_route_count=${parsedPublicRoutes.routes.size}"
+        )
 
         updateState(NoxVpnState.Starting)
         ensureNotificationChannel()
@@ -98,6 +110,7 @@ class NoxVpnService : VpnService() {
 
         val clientConfig = NoxClientConfigStore.load(this)
         if (clientConfig == null) {
+            DiagnosticsLog.error(TAG, "cannot start VPN: missing transport config")
             updateState(NoxVpnState.Error("Missing Nox transport config. Run handshake with valid fields first."))
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -121,6 +134,7 @@ class NoxVpnService : VpnService() {
         try {
             builder.addDisallowedApplication(packageName)
         } catch (_: Exception) {
+            DiagnosticsLog.error(TAG, "failed to apply app-level VPN bypass")
             updateState(NoxVpnState.Error("Failed to apply VPN app bypass for control path"))
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -140,6 +154,7 @@ class NoxVpnService : VpnService() {
         val tunnel = builder.establish()
 
         if (tunnel == null) {
+            DiagnosticsLog.error(TAG, "builder.establish() returned null")
             updateState(NoxVpnState.Error("Failed to establish VPN interface"))
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -174,6 +189,7 @@ class NoxVpnService : VpnService() {
             },
             onError = { reason ->
                 if (!isStopping) {
+                    DiagnosticsLog.error(TAG, "TUN loop failed: $reason")
                     updateState(NoxVpnState.Error("TUN loop failed: $reason"))
                     stopVpn("TUN loop failed: $reason")
                 }
@@ -202,9 +218,11 @@ class NoxVpnService : VpnService() {
         )
 
         updateNotification("VPN active ($routeProfileLabel). Constrained IPv4/TCP via Nox transport.")
+        DiagnosticsLog.info(TAG, "VPN active with constrained IPv4/TCP forwarder")
     }
 
     private fun stopVpn(reason: String) {
+        DiagnosticsLog.info(TAG, "stopping VPN: $reason")
         isStopping = true
         updateState(NoxVpnState.Stopping)
         closeTunnel()

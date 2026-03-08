@@ -2,6 +2,7 @@ package com.noxcore.noxdroid.core.vpn.dataplane
 
 import android.util.Log
 import com.noxcore.noxdroid.core.connection.NoxTransportClient
+import com.noxcore.noxdroid.core.diagnostics.DiagnosticsLog
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.random.Random
@@ -36,6 +37,9 @@ class TcpTunForwarder(
             val key = sessionKey(packet)
             val session = sessions[key] ?: run {
                 droppedPackets += 1
+                if (!packet.rst) {
+                    sendRstForUnknownSession(packet)
+                }
                 return false
             }
 
@@ -52,6 +56,10 @@ class TcpTunForwarder(
                 if (packet.sequenceNumber == expectedSeq) {
                     val sent = transportClient.sendData(session.streamId, packet.payload)
                     if (!sent) {
+                        DiagnosticsLog.warn(
+                            TAG,
+                            "transport write failed stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
+                        )
                         closeSession(session, "transport write failed", sendCloseFrame = true)
                         return true
                     }
@@ -80,6 +88,10 @@ class TcpTunForwarder(
                         payload = ByteArray(0)
                     )
                     if (!session.closeFrameSent) {
+                        DiagnosticsLog.info(
+                            TAG,
+                            "client half-close stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
+                        )
                         transportClient.closeStream(session.streamId, "client fin", sendFrame = true)
                         session.closeFrameSent = true
                     }
@@ -117,6 +129,10 @@ class TcpTunForwarder(
                 val session = iterator.next().value
                 if (nowMs - session.lastSeenMs > idleMs) {
                     if (!session.closeFrameSent) {
+                        DiagnosticsLog.info(
+                            TAG,
+                            "idle timeout stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
+                        )
                         transportClient.closeStream(session.streamId, "idle timeout", sendFrame = true)
                         session.closeFrameSent = true
                     }
@@ -133,6 +149,7 @@ class TcpTunForwarder(
             }
             sessions.clear()
         }
+        DiagnosticsLog.info(TAG, "forwarder stopped")
         transportClient.close()
     }
 
@@ -151,13 +168,18 @@ class TcpTunForwarder(
         }
 
         val target = "${packet.destinationIp}:${packet.destinationPort}"
+        val openStartedAtMs = System.currentTimeMillis()
         val openResult = transportClient.openStream(target)
         if (!openResult.ok) {
             connectFailures += 1
             droppedPackets += 1
-            Log.w(TAG, "open stream failed for $target: ${openResult.error}")
+            val reason = openResult.error ?: "open failed"
+            Log.w(TAG, "open stream failed for $target: $reason")
+            DiagnosticsLog.warn(TAG, "open stream failed target=$target reason=$reason")
+            sendRstForFailedOpen(packet)
             return false
         }
+        val openLatencyMs = System.currentTimeMillis() - openStartedAtMs
 
         val serverIsn = Random.nextInt().toLong() and 0xFFFF_FFFFL
         val session = ForwardSession(
@@ -170,6 +192,10 @@ class TcpTunForwarder(
         )
 
         sessions[key] = session
+        DiagnosticsLog.info(
+            TAG,
+            "stream opened stream=${session.streamId} target=$target open_latency_ms=$openLatencyMs"
+        )
         transportClient.registerCallbacks(
             streamId = session.streamId,
             onData = { data -> onTransportData(session, data) },
@@ -199,14 +225,20 @@ class TcpTunForwarder(
             if (current.remoteStreamClosed) {
                 return
             }
-            sendTcp(
-                session = current,
-                seq = current.serverSeq,
-                ack = current.clientNextSeq,
-                flags = FLAG_ACK or FLAG_PSH,
-                payload = data
-            )
-            current.serverSeq = add32(current.serverSeq, data.size)
+            var offset = 0
+            while (offset < data.size) {
+                val chunkSize = minOf(data.size - offset, MAX_PAYLOAD_BYTES_PER_PACKET)
+                val chunk = data.copyOfRange(offset, offset + chunkSize)
+                sendTcp(
+                    session = current,
+                    seq = current.serverSeq,
+                    ack = current.clientNextSeq,
+                    flags = FLAG_ACK or FLAG_PSH,
+                    payload = chunk
+                )
+                current.serverSeq = add32(current.serverSeq, chunkSize)
+                offset += chunkSize
+            }
             current.lastSeenMs = System.currentTimeMillis()
             downlinkBytes += data.size.toLong()
         }
@@ -220,6 +252,10 @@ class TcpTunForwarder(
             }
             current.remoteStreamClosed = true
             if (!current.remoteFinSent) {
+                DiagnosticsLog.info(
+                    TAG,
+                    "remote close stream=${current.streamId} ${current.key.serverIp}:${current.key.serverPort} reason=$reason"
+                )
                 sendTcp(
                     session = current,
                     seq = current.serverSeq,
@@ -251,6 +287,66 @@ class TcpTunForwarder(
             "Closed session ${session.key.clientIp}:${session.key.clientPort} -> " +
                 "${session.key.serverIp}:${session.key.serverPort}: $reason"
         )
+        DiagnosticsLog.info(
+            TAG,
+            "closed stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort} reason=$reason"
+        )
+    }
+
+    private fun sendRstForUnknownSession(packet: TcpPacketMeta) {
+        val ackValue = if (packet.payloadLength > 0 || packet.fin || packet.syn) {
+            add32(packet.sequenceNumber, packet.payloadLength + if (packet.fin || packet.syn) 1 else 0)
+        } else {
+            packet.sequenceNumber
+        }
+        val rstFlags = if (packet.ack) FLAG_RST else FLAG_RST or FLAG_ACK
+        val rstAck = if (packet.ack) 0L else ackValue
+        sendRawTcp(
+            sourceIp = packet.destinationIp,
+            destinationIp = packet.sourceIp,
+            sourcePort = packet.destinationPort,
+            destinationPort = packet.sourcePort,
+            sequenceNumber = if (packet.ack) packet.acknowledgementNumber else 0L,
+            acknowledgementNumber = rstAck,
+            flags = rstFlags,
+            payload = ByteArray(0)
+        )
+    }
+
+    private fun sendRstForFailedOpen(packet: TcpPacketMeta) {
+        sendRawTcp(
+            sourceIp = packet.destinationIp,
+            destinationIp = packet.sourceIp,
+            sourcePort = packet.destinationPort,
+            destinationPort = packet.sourcePort,
+            sequenceNumber = 0L,
+            acknowledgementNumber = add32(packet.sequenceNumber, 1),
+            flags = FLAG_RST or FLAG_ACK,
+            payload = ByteArray(0)
+        )
+    }
+
+    private fun sendRawTcp(
+        sourceIp: String,
+        destinationIp: String,
+        sourcePort: Int,
+        destinationPort: Int,
+        sequenceNumber: Long,
+        acknowledgementNumber: Long,
+        flags: Int,
+        payload: ByteArray
+    ) {
+        val packet = buildTcpIpv4Packet(
+            sourceIp = sourceIp,
+            destinationIp = destinationIp,
+            sourcePort = sourcePort,
+            destinationPort = destinationPort,
+            sequenceNumber = sequenceNumber,
+            acknowledgementNumber = acknowledgementNumber,
+            flags = flags,
+            payload = payload
+        )
+        writeToTun(packet)
     }
 
     private fun sendTcp(
@@ -399,8 +495,10 @@ class TcpTunForwarder(
         private const val TCP_PROTOCOL = 6
         private const val DEFAULT_TTL = 64
         private const val DEFAULT_WINDOW = 65535
+        private const val MAX_PAYLOAD_BYTES_PER_PACKET = 1360
 
         private const val FLAG_FIN = 0x01
+        private const val FLAG_RST = 0x04
         private const val FLAG_PSH = 0x08
         private const val FLAG_ACK = 0x10
         private const val FLAG_SYN = 0x02

@@ -14,6 +14,10 @@
   - per-flow `open/open_resp/data/close` mapped from constrained TCP forwarder
   - downlink Nox `data` frames injected back as TCP payload to TUN
   - TCP stream close lifecycle improved to keep sessions alive through basic half-close instead of immediate FIN teardown
+  - added diagnostics/log capture for VPN data plane + transport lifecycle (persisted file + in-app tail)
+  - improved failure handling for practical outbound attempts:
+    - inject TCP RST on failed opens/unknown sessions to avoid long client hangs
+    - segment downlink payload before TUN injection to reduce oversized-packet issues
   - current implementation is intentionally constrained (no reconnect/failover yet)
 - Routing safety hardening: implemented for this iteration:
   - removed global `0.0.0.0/0` capture for now
@@ -26,6 +30,7 @@
 - Harden the new Nox transport forwarding path:
   - add transport keepalive/reconnect and session cleanup on transport resets
   - improve open/data/close error propagation and metrics
+  - validate outbound web reachability with packet captures using new diagnostics and tighten stream lifecycle behavior based on observed failures
   - improve controlled public-routing UX (profiles, safe defaults, and route diagnostics)
 
 ## Follow-on steps

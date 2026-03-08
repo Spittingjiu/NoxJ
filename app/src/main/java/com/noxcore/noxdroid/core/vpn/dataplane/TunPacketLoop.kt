@@ -4,6 +4,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.noxcore.noxdroid.core.connection.NoxClientConfig
 import com.noxcore.noxdroid.core.connection.NoxTransportClient
+import com.noxcore.noxdroid.core.diagnostics.DiagnosticsLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -57,6 +58,7 @@ class TunPacketLoop(
             val connectResult = transportClient.connect()
             if (connectResult.isFailure) {
                 val reason = connectResult.exceptionOrNull()?.message ?: "transport connect failed"
+                DiagnosticsLog.error(TAG, "transport connect failed: $reason")
                 onError("Nox transport connect failed: $reason")
                 try {
                     input.close()
@@ -78,6 +80,7 @@ class TunPacketLoop(
                 },
                 transportClient = transportClient
             )
+            DiagnosticsLog.info(TAG, "transport connected; entering TUN read loop")
 
             var totalPackets = 0L
             var malformedPackets = 0L
@@ -86,6 +89,8 @@ class TunPacketLoop(
             var lastSummary = "waiting for packets"
             var lastStatsEmitMs = 0L
             var lastCleanupMs = 0L
+            var lastLoggedConnectFailures = 0L
+            var lastLoggedDroppedPackets = 0L
 
             try {
                 while (isActive) {
@@ -134,6 +139,20 @@ class TunPacketLoop(
 
                     if (nowMs - lastStatsEmitMs >= STATS_EMIT_INTERVAL_MS) {
                         val forwardStats = forwarder.stats()
+                        if (forwardStats.connectFailures > lastLoggedConnectFailures) {
+                            DiagnosticsLog.warn(
+                                TAG,
+                                "stream open failures increased to ${forwardStats.connectFailures} last=$lastSummary"
+                            )
+                            lastLoggedConnectFailures = forwardStats.connectFailures
+                        }
+                        if (forwardStats.droppedPackets > lastLoggedDroppedPackets) {
+                            DiagnosticsLog.warn(
+                                TAG,
+                                "dropped forwarded packets increased to ${forwardStats.droppedPackets} last=$lastSummary"
+                            )
+                            lastLoggedDroppedPackets = forwardStats.droppedPackets
+                        }
                         onStats(
                             TunLoopStats(
                                 totalPackets = totalPackets,
@@ -155,8 +174,10 @@ class TunPacketLoop(
             } catch (e: IOException) {
                 val message = e.message ?: "tunnel read failed"
                 Log.w(TAG, "TUN read loop stopped: $message")
+                DiagnosticsLog.warn(TAG, "TUN read loop stopped: $message")
                 onError(message)
             } finally {
+                DiagnosticsLog.info(TAG, "leaving TUN read loop; stopping forwarder")
                 forwarder.stop()
 
                 try {
