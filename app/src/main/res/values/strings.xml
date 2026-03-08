@@ -1,6 +1,7 @@
 <resources>
-    <string name="app_name">NoxDroid</string>
-    <string name="title_handshake_tester">NoxJ Android Client Foundation</string>
+    <string name="app_name">NoxJ</string>
+    <string name="title_handshake_tester">NoxJ</string>
+    <string name="subtitle_main">Nox 协议安卓客户端试用版</string>
     <string name="hint_server_address">Server WebSocket URL (wss://host/path)</string>
     <string name="hint_shared_secret">Shared secret</string>
     <string name="hint_client_id">Client ID</string>
