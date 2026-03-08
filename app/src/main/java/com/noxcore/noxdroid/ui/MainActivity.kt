@@ -74,7 +74,7 @@ class MainActivity : AppCompatActivity() {
 
         vpnButton.setOnClickListener {
             when (currentVpnState) {
-                is NoxVpnState.RunningNoForwarding,
+                is NoxVpnState.RunningCapture,
                 is NoxVpnState.Starting -> NoxVpnService.stop(this)
 
                 else -> requestAndStartVpn()
@@ -141,9 +141,16 @@ class MainActivity : AppCompatActivity() {
                 vpnStatusText.text = getString(R.string.status_vpn_starting)
             }
 
-            is NoxVpnState.RunningNoForwarding -> {
+            is NoxVpnState.RunningCapture -> {
                 vpnButton.text = getString(R.string.action_stop_vpn)
-                vpnStatusText.text = getString(R.string.status_vpn_running_no_forwarding)
+                vpnStatusText.text = getString(
+                    R.string.status_vpn_running_capture,
+                    state.totalPackets,
+                    state.ipv4Packets,
+                    state.tcpPackets,
+                    state.activeTcpSessions,
+                    state.lastPacketSummary
+                )
             }
 
             is NoxVpnState.Stopping -> {

@@ -13,11 +13,15 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
   - Foreground service notification + stop action
   - Real `VpnService.Builder` session/interface setup (`establish()`)
   - Start/stop control from UI
+- First real data-plane step is implemented:
+  - Real TUN read loop from the VPN interface file descriptor
+  - Packet classification: non-IPv4, IPv4 non-TCP, IPv4 TCP, malformed
+  - Minimal IPv4/TCP parsing foundation (ports, flags, seq/ack, payload length)
+  - Internal TCP session mapping groundwork keyed by flow tuple
 
 ## Important current limit (honest status)
-- The VPN data plane is not implemented yet.
-- No packet forwarding between TUN and Nox transport is running in this iteration.
-- Current VPN mode is control-plane skeleton only: it establishes a real Android VPN interface and service lifecycle.
+- No packet forwarding between TUN and Nox transport is implemented yet.
+- Current VPN mode is capture/classification groundwork only, not full forwarding.
 
 ## HyperOS / modern Android notes
 - VPN runs as a foreground service to survive aggressive background limits.
@@ -40,6 +44,9 @@ Native Kotlin Android app progressing from a handshake probe toward a real VPN c
 ## Project layout
 - `app/src/main/java/com/noxcore/noxdroid/ui/MainActivity.kt`: handshake UI + VPN permission/start/stop UI flow
 - `app/src/main/java/com/noxcore/noxdroid/core/connection/SocketConnectionService.kt`: WSS + Nox `hello`/`hello_ack` handshake probe
-- `app/src/main/java/com/noxcore/noxdroid/core/vpn/NoxVpnService.kt`: foreground `VpnService` skeleton and session setup
+- `app/src/main/java/com/noxcore/noxdroid/core/vpn/NoxVpnService.kt`: foreground `VpnService` + TUN packet loop wiring
 - `app/src/main/java/com/noxcore/noxdroid/core/vpn/NoxVpnState.kt`: VPN runtime state model
+- `app/src/main/java/com/noxcore/noxdroid/core/vpn/dataplane/PacketParser.kt`: minimal IPv4/TCP parser foundation
+- `app/src/main/java/com/noxcore/noxdroid/core/vpn/dataplane/TcpSessionTracker.kt`: TCP flow/session mapping groundwork
+- `app/src/main/java/com/noxcore/noxdroid/core/vpn/dataplane/TunPacketLoop.kt`: packet capture loop and stats
 - `ROADMAP.md`: next iterations

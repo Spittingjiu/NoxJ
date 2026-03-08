@@ -3,13 +3,14 @@
 ## Iteration status (as of 2026-03-08)
 - Handshake tester: implemented and kept functional.
 - VPN framework: implemented (`VpnService`, permission flow, foreground service, start/stop UI).
-- Data plane: not implemented yet.
+- Data plane step 1: implemented (TUN packet capture loop, IPv4/TCP classification, TCP session mapping groundwork).
+- Forwarding: not implemented yet.
 
 ## Next step (priority)
-- Build packet forwarding loop between TUN and Nox transport:
-  - read packets from TUN file descriptor
-  - map flows/sessions into Nox transport frames
-  - write return packets back to TUN
+- Build the first constrained forwarding path between TUN and Nox transport:
+  - start with IPv4 TCP subset only
+  - map captured sessions into Nox transport frames
+  - return-path packet injection back to TUN
 
 ## Follow-on steps
 - Transport lifecycle:

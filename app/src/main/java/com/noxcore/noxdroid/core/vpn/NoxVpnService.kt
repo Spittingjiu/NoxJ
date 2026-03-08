@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
 import com.noxcore.noxdroid.R
+import com.noxcore.noxdroid.core.vpn.dataplane.TunPacketLoop
 import com.noxcore.noxdroid.ui.MainActivity
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,6 +20,8 @@ import kotlinx.coroutines.flow.asStateFlow
 class NoxVpnService : VpnService() {
 
     private var tunnelFd: ParcelFileDescriptor? = null
+    private var tunPacketLoop: TunPacketLoop? = null
+    private var isStopping = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -40,10 +43,21 @@ class NoxVpnService : VpnService() {
 
     private fun startVpn() {
         if (tunnelFd != null) {
-            updateState(NoxVpnState.RunningNoForwarding(SESSION_NAME))
+            updateState(
+                NoxVpnState.RunningCapture(
+                    sessionName = SESSION_NAME,
+                    totalPackets = 0,
+                    malformedPackets = 0,
+                    ipv4Packets = 0,
+                    tcpPackets = 0,
+                    activeTcpSessions = 0,
+                    lastPacketSummary = "already running"
+                )
+            )
             return
         }
 
+        isStopping = false
         updateState(NoxVpnState.Starting)
         ensureNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Starting VPN session"))
@@ -73,16 +87,52 @@ class NoxVpnService : VpnService() {
         }
 
         tunnelFd = tunnel
-        updateState(NoxVpnState.RunningNoForwarding(SESSION_NAME))
 
-        val runningNotification = buildNotification(
-            "VPN active (control plane only). Packet forwarding not implemented yet."
+        val loop = TunPacketLoop(
+            onStats = { stats ->
+                val runningState = NoxVpnState.RunningCapture(
+                    sessionName = SESSION_NAME,
+                    totalPackets = stats.totalPackets,
+                    malformedPackets = stats.malformedPackets,
+                    ipv4Packets = stats.ipv4Packets,
+                    tcpPackets = stats.tcpPackets,
+                    activeTcpSessions = stats.activeTcpSessions,
+                    lastPacketSummary = stats.lastPacketSummary
+                )
+                updateState(runningState)
+                updateNotification(
+                    "Capturing packets: tcp=${stats.tcpPackets} sessions=${stats.activeTcpSessions}. " +
+                        "Forwarding not implemented yet."
+                )
+            },
+            onError = { reason ->
+                if (!isStopping) {
+                    updateState(NoxVpnState.Error("TUN loop failed: $reason"))
+                    stopVpn("TUN loop failed: $reason")
+                }
+            }
         )
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(NOTIFICATION_ID, runningNotification)
+
+        tunPacketLoop = loop
+        loop.start(tunnel)
+
+        updateState(
+            NoxVpnState.RunningCapture(
+                sessionName = SESSION_NAME,
+                totalPackets = 0,
+                malformedPackets = 0,
+                ipv4Packets = 0,
+                tcpPackets = 0,
+                activeTcpSessions = 0,
+                lastPacketSummary = "waiting for packets"
+            )
+        )
+
+        updateNotification("VPN active. Capturing TUN packets (no forwarding yet).")
     }
 
     private fun stopVpn(reason: String) {
+        isStopping = true
         updateState(NoxVpnState.Stopping)
         closeTunnel()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -98,11 +148,19 @@ class NoxVpnService : VpnService() {
     }
 
     private fun closeTunnel() {
+        tunPacketLoop?.stop()
+        tunPacketLoop = null
+
         try {
             tunnelFd?.close()
         } catch (_: Exception) {
         }
         tunnelFd = null
+    }
+
+    private fun updateNotification(contentText: String) {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(NOTIFICATION_ID, buildNotification(contentText))
     }
 
     private fun buildNotification(contentText: String): Notification {
