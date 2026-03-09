@@ -786,12 +786,16 @@ class TcpTunForwarder(
         if (packet.destinationPort != HTTPS_PORT) {
             return false
         }
-        val markedAtMs = quicFallbackTargets[HttpsTargetKey(packet.destinationIp, packet.destinationPort)] ?: return false
-        if (nowMs - markedAtMs > QUIC_FALLBACK_TARGET_TTL_MS) {
-            quicFallbackTargets.remove(HttpsTargetKey(packet.destinationIp, packet.destinationPort))
-            return false
+        val key = HttpsTargetKey(packet.destinationIp, packet.destinationPort)
+        val markedAtMs = quicFallbackTargets[key]
+        if (markedAtMs != null) {
+            if (nowMs - markedAtMs > QUIC_FALLBACK_TARGET_TTL_MS) {
+                quicFallbackTargets.remove(key)
+            } else {
+                return true
+            }
         }
-        return true
+        return hasRecentFallbackSubnetMatch(packet.destinationIp, packet.destinationPort, nowMs)
     }
 
     private fun synRetryKey(packet: TcpPacketMeta): TcpSessionKey {
@@ -812,6 +816,37 @@ class TcpTunForwarder(
             return false
         }
         return true
+    }
+
+    private fun hasRecentFallbackSubnetMatch(destinationIp: String, destinationPort: Int, nowMs: Long): Boolean {
+        val destinationPrefix = ipv4Prefix24(destinationIp) ?: return false
+        for ((key, markedAtMs) in quicFallbackTargets) {
+            if (key.destinationPort != destinationPort) {
+                continue
+            }
+            if (nowMs - markedAtMs > QUIC_FALLBACK_SUBNET_MATCH_TTL_MS) {
+                continue
+            }
+            val markedPrefix = ipv4Prefix24(key.destinationIp) ?: continue
+            if (markedPrefix == destinationPrefix) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun ipv4Prefix24(value: String): Int? {
+        val octets = value.split('.')
+        if (octets.size != 4) {
+            return null
+        }
+        val o1 = octets[0].toIntOrNull() ?: return null
+        val o2 = octets[1].toIntOrNull() ?: return null
+        val o3 = octets[2].toIntOrNull() ?: return null
+        if (o1 !in 0..255 || o2 !in 0..255 || o3 !in 0..255) {
+            return null
+        }
+        return (o1 shl 16) or (o2 shl 8) or o3
     }
 
     private fun synBackoffMs(failureCount: Int): Long {
@@ -873,6 +908,7 @@ class TcpTunForwarder(
         private const val HTTPS_SYN_MAX_BACKOFF_MS = 8_000L
         private const val YOUTUBE_HTTPS_SYN_RETRY_STATE_IDLE_MS = 90_000L
         private const val QUIC_FALLBACK_TARGET_TTL_MS = 120_000L
+        private const val QUIC_FALLBACK_SUBNET_MATCH_TTL_MS = 30_000L
         private const val SYN_RETRY_ANY_CLIENT = "*"
 
         private const val FLAG_FIN = 0x01
