@@ -143,9 +143,19 @@ class NoxTransportClient(
         }
     }
 
-    fun openStream(target: String): OpenStreamResult {
+    fun openStream(
+        target: String,
+        responseTimeoutMs: Long = CONTROL_TIMEOUT_MS,
+        responseTimeoutGraceMs: Long = OPEN_TIMEOUT_GRACE_MS
+    ): OpenStreamResult {
         if (target.isBlank()) {
             return OpenStreamResult(streamId = 0L, error = "target is blank")
+        }
+        if (responseTimeoutMs <= 0L) {
+            return OpenStreamResult(streamId = 0L, error = "invalid response timeout")
+        }
+        if (responseTimeoutGraceMs < 0L) {
+            return OpenStreamResult(streamId = 0L, error = "invalid response timeout grace")
         }
 
         if (!isConnected()) {
@@ -181,13 +191,13 @@ class NoxTransportClient(
             return OpenStreamResult(streamId = streamId, error = "transport write failed")
         }
 
-        var completed = openWait.latch.await(CONTROL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        var completed = openWait.latch.await(responseTimeoutMs, TimeUnit.MILLISECONDS)
         if (!completed && isConnected()) {
             DiagnosticsLog.warn(
                 TAG,
-                "open stream still pending stream=$streamId target=$target after=${CONTROL_TIMEOUT_MS}ms; entering timeout grace=${OPEN_TIMEOUT_GRACE_MS}ms"
+                "open stream still pending stream=$streamId target=$target after=${responseTimeoutMs}ms; entering timeout grace=${responseTimeoutGraceMs}ms"
             )
-            completed = openWait.latch.await(OPEN_TIMEOUT_GRACE_MS, TimeUnit.MILLISECONDS)
+            completed = openWait.latch.await(responseTimeoutGraceMs, TimeUnit.MILLISECONDS)
             if (completed) {
                 DiagnosticsLog.info(TAG, "open stream completed during grace stream=$streamId target=$target")
             }

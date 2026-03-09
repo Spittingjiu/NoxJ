@@ -271,14 +271,27 @@ class TcpTunForwarder(
         }
 
         val target = "${packet.destinationIp}:${packet.destinationPort}"
+        val youtubeFallbackTarget = isYoutubeFallbackTcp443(packet, nowMs)
+        val (openTimeoutMs, openTimeoutGraceMs) = if (youtubeFallbackTarget) {
+            YOUTUBE_HTTPS_OPEN_TIMEOUT_MS to YOUTUBE_HTTPS_OPEN_TIMEOUT_GRACE_MS
+        } else {
+            DEFAULT_OPEN_TIMEOUT_MS to DEFAULT_OPEN_TIMEOUT_GRACE_MS
+        }
         val openStartedAtMs = nowMs
-        val openResult = transportClient.openStream(target)
+        val openResult = transportClient.openStream(
+            target = target,
+            responseTimeoutMs = openTimeoutMs,
+            responseTimeoutGraceMs = openTimeoutGraceMs
+        )
         if (!openResult.ok) {
             connectFailures += 1
             droppedPackets += 1
             val reason = openResult.error ?: "open failed"
             Log.w(TAG, "open stream failed for $target: $reason")
-            DiagnosticsLog.warn(TAG, "open stream failed target=$target reason=$reason")
+            DiagnosticsLog.warn(
+                TAG,
+                "open stream failed target=$target reason=$reason youtube_fallback=$youtubeFallbackTarget timeout_ms=$openTimeoutMs grace_ms=$openTimeoutGraceMs"
+            )
             if (shouldDeferSynResetAfterOpenFailure(packet, reason, nowMs)) {
                 transientOpenDeferrals += 1
                 DiagnosticsLog.warn(
@@ -907,6 +920,10 @@ class TcpTunForwarder(
         private const val HTTPS_SYN_BASE_BACKOFF_MS = 500
         private const val HTTPS_SYN_MAX_BACKOFF_MS = 8_000L
         private const val YOUTUBE_HTTPS_SYN_RETRY_STATE_IDLE_MS = 90_000L
+        private const val DEFAULT_OPEN_TIMEOUT_MS = 8_000L
+        private const val DEFAULT_OPEN_TIMEOUT_GRACE_MS = 4_000L
+        private const val YOUTUBE_HTTPS_OPEN_TIMEOUT_MS = 1_200L
+        private const val YOUTUBE_HTTPS_OPEN_TIMEOUT_GRACE_MS = 800L
         private const val QUIC_FALLBACK_TARGET_TTL_MS = 120_000L
         private const val QUIC_FALLBACK_SUBNET_MATCH_TTL_MS = 30_000L
         private const val SYN_RETRY_ANY_CLIENT = "*"
