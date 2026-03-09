@@ -18,7 +18,12 @@ class TcpTunForwarder(
         val downlinkBytes: Long,
         val droppedPackets: Long,
         val connectFailures: Long,
-        val transientOpenDeferrals: Long
+        val transientOpenDeferrals: Long,
+        val youtubeFallbackOpenAttempts: Long,
+        val youtubeFallbackOpenSuccesses: Long,
+        val youtubeFallbackOpenFailures: Long,
+        val youtubeFallbackDownlinkBytes: Long,
+        val youtubeFallbackLastFailureReason: String?
     )
 
     private val sessions = linkedMapOf<TcpSessionKey, ForwardSession>()
@@ -31,6 +36,11 @@ class TcpTunForwarder(
     private var droppedPackets = 0L
     private var connectFailures = 0L
     private var transientOpenDeferrals = 0L
+    private var youtubeFallbackOpenAttempts = 0L
+    private var youtubeFallbackOpenSuccesses = 0L
+    private var youtubeFallbackOpenFailures = 0L
+    private var youtubeFallbackDownlinkBytes = 0L
+    private var youtubeFallbackLastFailureReason: String? = null
 
     fun noteUdp443Fallback(destinationIp: String, destinationPort: Int = HTTPS_PORT) {
         if (destinationPort != HTTPS_PORT) {
@@ -149,7 +159,12 @@ class TcpTunForwarder(
                 downlinkBytes = downlinkBytes,
                 droppedPackets = droppedPackets,
                 connectFailures = connectFailures,
-                transientOpenDeferrals = transientOpenDeferrals
+                transientOpenDeferrals = transientOpenDeferrals,
+                youtubeFallbackOpenAttempts = youtubeFallbackOpenAttempts,
+                youtubeFallbackOpenSuccesses = youtubeFallbackOpenSuccesses,
+                youtubeFallbackOpenFailures = youtubeFallbackOpenFailures,
+                youtubeFallbackDownlinkBytes = youtubeFallbackDownlinkBytes,
+                youtubeFallbackLastFailureReason = youtubeFallbackLastFailureReason
             )
         }
     }
@@ -272,10 +287,18 @@ class TcpTunForwarder(
 
         val target = "${packet.destinationIp}:${packet.destinationPort}"
         val youtubeFallbackTarget = isYoutubeFallbackTcp443(packet, nowMs)
+        val retryState = if (youtubeFallbackTarget) synRetryStates[synRetryKey(packet)] else null
         val (openTimeoutMs, openTimeoutGraceMs) = if (youtubeFallbackTarget) {
-            YOUTUBE_HTTPS_OPEN_TIMEOUT_MS to YOUTUBE_HTTPS_OPEN_TIMEOUT_GRACE_MS
+            youtubeHttpsOpenTimeouts(retryState?.failureCount ?: 0)
         } else {
             DEFAULT_OPEN_TIMEOUT_MS to DEFAULT_OPEN_TIMEOUT_GRACE_MS
+        }
+        if (youtubeFallbackTarget) {
+            youtubeFallbackOpenAttempts += 1
+            DiagnosticsLog.info(
+                TAG,
+                "youtube-first tcp/443 open attempt target=$target prior_failures=${retryState?.failureCount ?: 0} timeout_ms=$openTimeoutMs grace_ms=$openTimeoutGraceMs"
+            )
         }
         val openStartedAtMs = nowMs
         val openResult = transportClient.openStream(
@@ -287,6 +310,10 @@ class TcpTunForwarder(
             connectFailures += 1
             droppedPackets += 1
             val reason = openResult.error ?: "open failed"
+            if (youtubeFallbackTarget) {
+                youtubeFallbackOpenFailures += 1
+                youtubeFallbackLastFailureReason = reason
+            }
             Log.w(TAG, "open stream failed for $target: $reason")
             DiagnosticsLog.warn(
                 TAG,
@@ -313,11 +340,16 @@ class TcpTunForwarder(
             clientNextSeq = add32(packet.sequenceNumber, 1),
             serverSeq = add32(serverIsn, 1),
             serverIsn = serverIsn,
-            lastSeenMs = System.currentTimeMillis()
+            lastSeenMs = System.currentTimeMillis(),
+            youtubeFallbackFlow = youtubeFallbackTarget
         )
 
         sessions[key] = session
         synRetryStates.remove(synRetryKey(packet))
+        if (youtubeFallbackTarget) {
+            youtubeFallbackOpenSuccesses += 1
+            youtubeFallbackLastFailureReason = null
+        }
         DiagnosticsLog.info(
             TAG,
             "stream opened stream=${session.streamId} target=$target open_latency_ms=$openLatencyMs"
@@ -367,6 +399,9 @@ class TcpTunForwarder(
             }
             current.lastSeenMs = System.currentTimeMillis()
             downlinkBytes += data.size.toLong()
+            if (current.youtubeFallbackFlow) {
+                youtubeFallbackDownlinkBytes += data.size.toLong()
+            }
         }
     }
 
@@ -824,11 +859,15 @@ class TcpTunForwarder(
     }
 
     private fun isRetryableHttpsOpenFailure(reason: String): Boolean {
-        val normalized = reason.lowercase()
-        if (normalized.contains("auth") || normalized.contains("unauthorized")) {
-            return false
+        return isTransientOpenFailure(reason)
+    }
+
+    private fun youtubeHttpsOpenTimeouts(failureCount: Int): Pair<Long, Long> {
+        return when {
+            failureCount >= 6 -> YOUTUBE_HTTPS_OPEN_TIMEOUT_SLOW_MS to YOUTUBE_HTTPS_OPEN_TIMEOUT_SLOW_GRACE_MS
+            failureCount >= 3 -> YOUTUBE_HTTPS_OPEN_TIMEOUT_MEDIUM_MS to YOUTUBE_HTTPS_OPEN_TIMEOUT_MEDIUM_GRACE_MS
+            else -> YOUTUBE_HTTPS_OPEN_TIMEOUT_FAST_MS to YOUTUBE_HTTPS_OPEN_TIMEOUT_FAST_GRACE_MS
         }
-        return true
     }
 
     private fun hasRecentFallbackSubnetMatch(destinationIp: String, destinationPort: Int, nowMs: Long): Boolean {
@@ -882,6 +921,7 @@ class TcpTunForwarder(
         var closeFrameSent: Boolean = false,
         var consecutiveWriteFailures: Int = 0,
         var firstWriteFailureAtMs: Long = 0L,
+        val youtubeFallbackFlow: Boolean = false,
         val outOfOrderSegments: MutableMap<Long, ByteArray> = linkedMapOf(),
         var outOfOrderBytes: Int = 0
     )
@@ -922,8 +962,12 @@ class TcpTunForwarder(
         private const val YOUTUBE_HTTPS_SYN_RETRY_STATE_IDLE_MS = 90_000L
         private const val DEFAULT_OPEN_TIMEOUT_MS = 8_000L
         private const val DEFAULT_OPEN_TIMEOUT_GRACE_MS = 4_000L
-        private const val YOUTUBE_HTTPS_OPEN_TIMEOUT_MS = 1_200L
-        private const val YOUTUBE_HTTPS_OPEN_TIMEOUT_GRACE_MS = 800L
+        private const val YOUTUBE_HTTPS_OPEN_TIMEOUT_FAST_MS = 1_200L
+        private const val YOUTUBE_HTTPS_OPEN_TIMEOUT_FAST_GRACE_MS = 800L
+        private const val YOUTUBE_HTTPS_OPEN_TIMEOUT_MEDIUM_MS = 2_400L
+        private const val YOUTUBE_HTTPS_OPEN_TIMEOUT_MEDIUM_GRACE_MS = 1_200L
+        private const val YOUTUBE_HTTPS_OPEN_TIMEOUT_SLOW_MS = 4_000L
+        private const val YOUTUBE_HTTPS_OPEN_TIMEOUT_SLOW_GRACE_MS = 2_000L
         private const val QUIC_FALLBACK_TARGET_TTL_MS = 120_000L
         private const val QUIC_FALLBACK_SUBNET_MATCH_TTL_MS = 30_000L
         private const val SYN_RETRY_ANY_CLIENT = "*"

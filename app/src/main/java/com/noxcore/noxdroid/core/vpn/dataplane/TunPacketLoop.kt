@@ -97,6 +97,9 @@ class TunPacketLoop(
             var lastLoggedOpenDeferrals = 0L
             var quicFallbackSignals = 0L
             var lastLoggedQuicFallbackSignals = 0L
+            var lastLoggedYoutubeOpenSuccesses = 0L
+            var lastLoggedYoutubeOpenFailures = 0L
+            var lastYoutubeFallbackVerdict = "unknown"
 
             try {
                 while (isActive) {
@@ -236,6 +239,33 @@ class TunPacketLoop(
                             )
                             lastLoggedQuicFallbackSignals = quicFallbackSignals
                         }
+                        if (forwardStats.youtubeFallbackOpenSuccesses > lastLoggedYoutubeOpenSuccesses) {
+                            DiagnosticsLog.info(
+                                TAG,
+                                "youtube-first tcp/443 open success attempts=${forwardStats.youtubeFallbackOpenAttempts} successes=${forwardStats.youtubeFallbackOpenSuccesses} downlink_bytes=${forwardStats.youtubeFallbackDownlinkBytes}"
+                            )
+                            lastLoggedYoutubeOpenSuccesses = forwardStats.youtubeFallbackOpenSuccesses
+                        }
+                        if (forwardStats.youtubeFallbackOpenFailures > lastLoggedYoutubeOpenFailures) {
+                            DiagnosticsLog.warn(
+                                TAG,
+                                "youtube-first tcp/443 open failures=${forwardStats.youtubeFallbackOpenFailures} last_reason=${forwardStats.youtubeFallbackLastFailureReason ?: "n/a"}"
+                            )
+                            lastLoggedYoutubeOpenFailures = forwardStats.youtubeFallbackOpenFailures
+                        }
+                        val youtubeFallbackVerdict = classifyYoutubeFallbackOutcome(
+                            quicFallbackSignals = quicFallbackSignals,
+                            openSuccesses = forwardStats.youtubeFallbackOpenSuccesses,
+                            openFailures = forwardStats.youtubeFallbackOpenFailures,
+                            downlinkBytes = forwardStats.youtubeFallbackDownlinkBytes
+                        )
+                        if (youtubeFallbackVerdict != lastYoutubeFallbackVerdict) {
+                            DiagnosticsLog.info(
+                                TAG,
+                                "youtube-first fallback verdict=$youtubeFallbackVerdict signals=$quicFallbackSignals attempts=${forwardStats.youtubeFallbackOpenAttempts} open_ok=${forwardStats.youtubeFallbackOpenSuccesses} open_fail=${forwardStats.youtubeFallbackOpenFailures} downlink=${forwardStats.youtubeFallbackDownlinkBytes}B"
+                            )
+                            lastYoutubeFallbackVerdict = youtubeFallbackVerdict
+                        }
                         onStats(
                             TunLoopStats(
                                 totalPackets = totalPackets,
@@ -337,6 +367,27 @@ class TunPacketLoop(
         return nowMs - lastReconnectAttemptMs >= intervalMs
     }
 
+    private fun classifyYoutubeFallbackOutcome(
+        quicFallbackSignals: Long,
+        openSuccesses: Long,
+        openFailures: Long,
+        downlinkBytes: Long
+    ): String {
+        if (quicFallbackSignals == 0L) {
+            return "pending-no-signal"
+        }
+        if (openSuccesses > 0 && downlinkBytes > 0) {
+            return "likely-yes"
+        }
+        if (openFailures >= YOUTUBE_VERDICT_MIN_FAILURES &&
+            openSuccesses == 0L &&
+            downlinkBytes == 0L
+        ) {
+            return "likely-no"
+        }
+        return "pending"
+    }
+
     private fun sendUdpPortUnreachable(
         originalPacket: ByteArray,
         originalLength: Int,
@@ -431,6 +482,7 @@ class TunPacketLoop(
         private const val FORWARD_IDLE_TIMEOUT_MS = 180_000L
         private const val TRANSPORT_RECONNECT_INTERVAL_MS = 3_000L
         private const val SYN_RECONNECT_INTERVAL_MS = 800L
+        private const val YOUTUBE_VERDICT_MIN_FAILURES = 6L
         private const val HTTPS_PORT = 443
         private const val IPV4_HEADER_BYTES = 20
         private const val UDP_HEADER_BYTES = 8
