@@ -14,7 +14,7 @@
     <string name="action_stop_vpn">Stop VPN</string>
     <string name="status_vpn_idle">VPN idle (not running)</string>
     <string name="status_vpn_starting">VPN starting...</string>
-    <string name="status_vpn_running_forwarding">VPN active (constrained IPv4/TCP via Nox open/data/close). packets=%1$d ipv4=%2$d tcp=%3$d tcp_sessions=%4$d forward_sessions=%5$d transport=%6$s reconnect=%7$d/%8$d up=%9$dB down=%10$dB connect_fail=%11$d drop=%12$d last=%13$s</string>
+    <string name="status_vpn_running_forwarding">VPN active (constrained IPv4/TCP via Nox open/data/close). packets=%1$d ipv4=%2$d tcp=%3$d tcp_sessions=%4$d forward_sessions=%5$d transport=%6$s reconnect=%7$d/%8$d up=%9$dB down=%10$dB connect_fail=%11$d drop=%12$d yt_signals=%13$d yt_open_ok=%14$d yt_open_fail=%15$d yt_down=%16$dB yt_done=%17$d yt_good=%18$d yt_early=%19$d yt_verdict=%20$s last=%21$s</string>
     <string name="status_vpn_stopping">VPN stopping...</string>
     <string name="status_vpn_error">VPN error: %1$s</string>
     <string name="status_vpn_permission_denied">VPN permission denied</string>

@@ -18,6 +18,14 @@ sealed class NoxVpnState {
         val downlinkBytes: Long,
         val droppedForwardPackets: Long,
         val connectFailures: Long,
+        val quicFallbackSignals: Long,
+        val youtubeFallbackOpenSuccesses: Long,
+        val youtubeFallbackOpenFailures: Long,
+        val youtubeFallbackDownlinkBytes: Long,
+        val youtubeFallbackCompletedFlows: Long,
+        val youtubeFallbackSuccessfulFlows: Long,
+        val youtubeFallbackEarlyCloseFlows: Long,
+        val youtubeFallbackVerdict: String,
         val lastPacketSummary: String
     ) : NoxVpnState()
     data object Stopping : NoxVpnState()

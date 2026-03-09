@@ -64,6 +64,14 @@ class NoxVpnService : VpnService() {
                     downlinkBytes = 0,
                     droppedForwardPackets = 0,
                     connectFailures = 0,
+                    quicFallbackSignals = 0,
+                    youtubeFallbackOpenSuccesses = 0,
+                    youtubeFallbackOpenFailures = 0,
+                    youtubeFallbackDownlinkBytes = 0,
+                    youtubeFallbackCompletedFlows = 0,
+                    youtubeFallbackSuccessfulFlows = 0,
+                    youtubeFallbackEarlyCloseFlows = 0,
+                    youtubeFallbackVerdict = "pending-no-signal",
                     lastPacketSummary = "already running"
                 )
             )
@@ -184,6 +192,14 @@ class NoxVpnService : VpnService() {
                     downlinkBytes = stats.downlinkBytes,
                     droppedForwardPackets = stats.droppedForwardPackets,
                     connectFailures = stats.connectFailures,
+                    quicFallbackSignals = stats.quicFallbackSignals,
+                    youtubeFallbackOpenSuccesses = stats.youtubeFallbackOpenSuccesses,
+                    youtubeFallbackOpenFailures = stats.youtubeFallbackOpenFailures,
+                    youtubeFallbackDownlinkBytes = stats.youtubeFallbackDownlinkBytes,
+                    youtubeFallbackCompletedFlows = stats.youtubeFallbackCompletedFlows,
+                    youtubeFallbackSuccessfulFlows = stats.youtubeFallbackSuccessfulFlows,
+                    youtubeFallbackEarlyCloseFlows = stats.youtubeFallbackEarlyCloseFlows,
+                    youtubeFallbackVerdict = stats.youtubeFallbackVerdict,
                     lastPacketSummary = stats.lastPacketSummary
                 )
                 updateState(runningState)
@@ -223,6 +239,14 @@ class NoxVpnService : VpnService() {
                 downlinkBytes = 0,
                 droppedForwardPackets = 0,
                 connectFailures = 0,
+                quicFallbackSignals = 0,
+                youtubeFallbackOpenSuccesses = 0,
+                youtubeFallbackOpenFailures = 0,
+                youtubeFallbackDownlinkBytes = 0,
+                youtubeFallbackCompletedFlows = 0,
+                youtubeFallbackSuccessfulFlows = 0,
+                youtubeFallbackEarlyCloseFlows = 0,
+                youtubeFallbackVerdict = "pending-no-signal",
                 lastPacketSummary = "waiting for packets"
             )
         )

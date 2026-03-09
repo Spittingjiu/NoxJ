@@ -23,7 +23,11 @@ class TcpTunForwarder(
         val youtubeFallbackOpenSuccesses: Long,
         val youtubeFallbackOpenFailures: Long,
         val youtubeFallbackDownlinkBytes: Long,
-        val youtubeFallbackLastFailureReason: String?
+        val youtubeFallbackLastFailureReason: String?,
+        val youtubeFallbackActiveFlows: Int,
+        val youtubeFallbackCompletedFlows: Long,
+        val youtubeFallbackSuccessfulFlows: Long,
+        val youtubeFallbackEarlyCloseFlows: Long
     )
 
     private val sessions = linkedMapOf<TcpSessionKey, ForwardSession>()
@@ -41,6 +45,9 @@ class TcpTunForwarder(
     private var youtubeFallbackOpenFailures = 0L
     private var youtubeFallbackDownlinkBytes = 0L
     private var youtubeFallbackLastFailureReason: String? = null
+    private var youtubeFallbackCompletedFlows = 0L
+    private var youtubeFallbackSuccessfulFlows = 0L
+    private var youtubeFallbackEarlyCloseFlows = 0L
 
     fun noteUdp443Fallback(destinationIp: String, destinationPort: Int = HTTPS_PORT) {
         if (destinationPort != HTTPS_PORT) {
@@ -164,7 +171,11 @@ class TcpTunForwarder(
                 youtubeFallbackOpenSuccesses = youtubeFallbackOpenSuccesses,
                 youtubeFallbackOpenFailures = youtubeFallbackOpenFailures,
                 youtubeFallbackDownlinkBytes = youtubeFallbackDownlinkBytes,
-                youtubeFallbackLastFailureReason = youtubeFallbackLastFailureReason
+                youtubeFallbackLastFailureReason = youtubeFallbackLastFailureReason,
+                youtubeFallbackActiveFlows = sessions.values.count { it.youtubeFallbackFlow },
+                youtubeFallbackCompletedFlows = youtubeFallbackCompletedFlows,
+                youtubeFallbackSuccessfulFlows = youtubeFallbackSuccessfulFlows,
+                youtubeFallbackEarlyCloseFlows = youtubeFallbackEarlyCloseFlows
             )
         }
     }
@@ -238,6 +249,7 @@ class TcpTunForwarder(
                         TAG,
                         "final ack timeout stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort}"
                     )
+                    noteYoutubeFallbackClosure(session)
                     iterator.remove()
                 }
             }
@@ -342,7 +354,8 @@ class TcpTunForwarder(
             serverSeq = add32(serverIsn, 1),
             serverIsn = serverIsn,
             lastSeenMs = System.currentTimeMillis(),
-            youtubeFallbackFlow = youtubeFallbackTarget
+            youtubeFallbackFlow = youtubeFallbackTarget,
+            youtubeOpenedAtMs = openStartedAtMs
         )
 
         sessions[key] = session
@@ -402,6 +415,7 @@ class TcpTunForwarder(
             downlinkBytes += data.size.toLong()
             if (current.youtubeFallbackFlow) {
                 youtubeFallbackDownlinkBytes += data.size.toLong()
+                current.youtubeDownlinkBytes += data.size.toLong()
             }
         }
     }
@@ -463,6 +477,7 @@ class TcpTunForwarder(
     }
 
     private fun closeSession(session: ForwardSession, reason: String, sendCloseFrame: Boolean) {
+        noteYoutubeFallbackClosure(session)
         DiagnosticsLog.info(
             TAG,
             "close decision stream=${session.streamId} initiator=close_session send_frame=$sendCloseFrame reason=$reason"
@@ -485,6 +500,33 @@ class TcpTunForwarder(
             TAG,
             "closed stream=${session.streamId} ${session.key.clientIp}:${session.key.clientPort} -> ${session.key.serverIp}:${session.key.serverPort} reason=$reason"
         )
+    }
+
+    private fun noteYoutubeFallbackClosure(session: ForwardSession) {
+        if (!session.youtubeFallbackFlow || session.youtubeClosureRecorded) {
+            return
+        }
+        session.youtubeClosureRecorded = true
+        youtubeFallbackCompletedFlows += 1
+        val durationMs = (System.currentTimeMillis() - session.youtubeOpenedAtMs).coerceAtLeast(0L)
+        val downlinkBytes = session.youtubeDownlinkBytes
+        val earlyClose = durationMs < YOUTUBE_FLOW_EARLY_CLOSE_MS &&
+            downlinkBytes < YOUTUBE_FLOW_EARLY_CLOSE_MAX_DOWNLINK_BYTES
+        if (earlyClose) {
+            youtubeFallbackEarlyCloseFlows += 1
+            DiagnosticsLog.warn(
+                TAG,
+                "youtube-first early close stream=${session.streamId} duration_ms=$durationMs up=${session.youtubeUplinkBytes}B down=${downlinkBytes}B"
+            )
+            return
+        }
+        if (downlinkBytes >= YOUTUBE_FLOW_SUCCESS_MIN_DOWNLINK_BYTES) {
+            youtubeFallbackSuccessfulFlows += 1
+            DiagnosticsLog.info(
+                TAG,
+                "youtube-first completed stream=${session.streamId} duration_ms=$durationMs up=${session.youtubeUplinkBytes}B down=${downlinkBytes}B"
+            )
+        }
     }
 
     private fun sendRstForFailedOpen(packet: TcpPacketMeta) {
@@ -636,6 +678,9 @@ class TcpTunForwarder(
         session.firstWriteFailureAtMs = 0L
         session.clientNextSeq = add32(session.clientNextSeq, payload.size)
         uplinkBytes += payload.size.toLong()
+        if (session.youtubeFallbackFlow) {
+            session.youtubeUplinkBytes += payload.size.toLong()
+        }
         return true
     }
 
@@ -964,6 +1009,10 @@ class TcpTunForwarder(
         var consecutiveWriteFailures: Int = 0,
         var firstWriteFailureAtMs: Long = 0L,
         val youtubeFallbackFlow: Boolean = false,
+        val youtubeOpenedAtMs: Long = 0L,
+        var youtubeUplinkBytes: Long = 0L,
+        var youtubeDownlinkBytes: Long = 0L,
+        var youtubeClosureRecorded: Boolean = false,
         val outOfOrderSegments: MutableMap<Long, ByteArray> = linkedMapOf(),
         var outOfOrderBytes: Int = 0
     )
@@ -1020,6 +1069,9 @@ class TcpTunForwarder(
         private const val QUIC_FALLBACK_TARGET_TTL_MS = 120_000L
         private const val QUIC_FALLBACK_SUBNET_MATCH_TTL_MS = 30_000L
         private const val QUIC_FALLBACK_SUBNET16_MATCH_TTL_MS = 45_000L
+        private const val YOUTUBE_FLOW_EARLY_CLOSE_MS = 4_000L
+        private const val YOUTUBE_FLOW_EARLY_CLOSE_MAX_DOWNLINK_BYTES = 24 * 1024L
+        private const val YOUTUBE_FLOW_SUCCESS_MIN_DOWNLINK_BYTES = 64 * 1024L
         private const val SYN_RETRY_ANY_CLIENT = "*"
 
         private const val FLAG_FIN = 0x01

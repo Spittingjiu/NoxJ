@@ -230,6 +230,14 @@ class MainActivity : AppCompatActivity() {
                     state.downlinkBytes,
                     state.connectFailures,
                     state.droppedForwardPackets,
+                    state.quicFallbackSignals,
+                    state.youtubeFallbackOpenSuccesses,
+                    state.youtubeFallbackOpenFailures,
+                    state.youtubeFallbackDownlinkBytes,
+                    state.youtubeFallbackCompletedFlows,
+                    state.youtubeFallbackSuccessfulFlows,
+                    state.youtubeFallbackEarlyCloseFlows,
+                    state.youtubeFallbackVerdict,
                     state.lastPacketSummary
                 )
             }

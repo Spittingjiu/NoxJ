@@ -39,6 +39,13 @@ class TunPacketLoop(
         val connectFailures: Long,
         val transientOpenDeferrals: Long,
         val quicFallbackSignals: Long,
+        val youtubeFallbackOpenSuccesses: Long,
+        val youtubeFallbackOpenFailures: Long,
+        val youtubeFallbackDownlinkBytes: Long,
+        val youtubeFallbackCompletedFlows: Long,
+        val youtubeFallbackSuccessfulFlows: Long,
+        val youtubeFallbackEarlyCloseFlows: Long,
+        val youtubeFallbackVerdict: String,
         val lastPacketSummary: String
     )
 
@@ -99,6 +106,7 @@ class TunPacketLoop(
             var lastLoggedQuicFallbackSignals = 0L
             var lastLoggedYoutubeOpenSuccesses = 0L
             var lastLoggedYoutubeOpenFailures = 0L
+            var lastLoggedYoutubeEarlyCloseFlows = 0L
             var lastYoutubeFallbackVerdict = "unknown"
 
             try {
@@ -253,11 +261,20 @@ class TunPacketLoop(
                             )
                             lastLoggedYoutubeOpenFailures = forwardStats.youtubeFallbackOpenFailures
                         }
+                        if (forwardStats.youtubeFallbackEarlyCloseFlows > lastLoggedYoutubeEarlyCloseFlows) {
+                            DiagnosticsLog.warn(
+                                TAG,
+                                "youtube-first early closes=${forwardStats.youtubeFallbackEarlyCloseFlows} completed=${forwardStats.youtubeFallbackCompletedFlows} successful=${forwardStats.youtubeFallbackSuccessfulFlows}"
+                            )
+                            lastLoggedYoutubeEarlyCloseFlows = forwardStats.youtubeFallbackEarlyCloseFlows
+                        }
                         val youtubeFallbackVerdict = classifyYoutubeFallbackOutcome(
                             quicFallbackSignals = quicFallbackSignals,
                             openSuccesses = forwardStats.youtubeFallbackOpenSuccesses,
                             openFailures = forwardStats.youtubeFallbackOpenFailures,
-                            downlinkBytes = forwardStats.youtubeFallbackDownlinkBytes
+                            downlinkBytes = forwardStats.youtubeFallbackDownlinkBytes,
+                            successfulFlows = forwardStats.youtubeFallbackSuccessfulFlows,
+                            earlyCloseFlows = forwardStats.youtubeFallbackEarlyCloseFlows
                         )
                         if (youtubeFallbackVerdict != lastYoutubeFallbackVerdict) {
                             DiagnosticsLog.info(
@@ -283,6 +300,13 @@ class TunPacketLoop(
                                 connectFailures = forwardStats.connectFailures,
                                 transientOpenDeferrals = forwardStats.transientOpenDeferrals,
                                 quicFallbackSignals = quicFallbackSignals,
+                                youtubeFallbackOpenSuccesses = forwardStats.youtubeFallbackOpenSuccesses,
+                                youtubeFallbackOpenFailures = forwardStats.youtubeFallbackOpenFailures,
+                                youtubeFallbackDownlinkBytes = forwardStats.youtubeFallbackDownlinkBytes,
+                                youtubeFallbackCompletedFlows = forwardStats.youtubeFallbackCompletedFlows,
+                                youtubeFallbackSuccessfulFlows = forwardStats.youtubeFallbackSuccessfulFlows,
+                                youtubeFallbackEarlyCloseFlows = forwardStats.youtubeFallbackEarlyCloseFlows,
+                                youtubeFallbackVerdict = youtubeFallbackVerdict,
                                 lastPacketSummary = lastSummary
                             )
                         )
@@ -328,6 +352,20 @@ class TunPacketLoop(
                         connectFailures = forwardStats.connectFailures,
                         transientOpenDeferrals = forwardStats.transientOpenDeferrals,
                         quicFallbackSignals = quicFallbackSignals,
+                        youtubeFallbackOpenSuccesses = forwardStats.youtubeFallbackOpenSuccesses,
+                        youtubeFallbackOpenFailures = forwardStats.youtubeFallbackOpenFailures,
+                        youtubeFallbackDownlinkBytes = forwardStats.youtubeFallbackDownlinkBytes,
+                        youtubeFallbackCompletedFlows = forwardStats.youtubeFallbackCompletedFlows,
+                        youtubeFallbackSuccessfulFlows = forwardStats.youtubeFallbackSuccessfulFlows,
+                        youtubeFallbackEarlyCloseFlows = forwardStats.youtubeFallbackEarlyCloseFlows,
+                        youtubeFallbackVerdict = classifyYoutubeFallbackOutcome(
+                            quicFallbackSignals = quicFallbackSignals,
+                            openSuccesses = forwardStats.youtubeFallbackOpenSuccesses,
+                            openFailures = forwardStats.youtubeFallbackOpenFailures,
+                            downlinkBytes = forwardStats.youtubeFallbackDownlinkBytes,
+                            successfulFlows = forwardStats.youtubeFallbackSuccessfulFlows,
+                            earlyCloseFlows = forwardStats.youtubeFallbackEarlyCloseFlows
+                        ),
                         lastPacketSummary = lastSummary
                     )
                 )
@@ -371,13 +409,23 @@ class TunPacketLoop(
         quicFallbackSignals: Long,
         openSuccesses: Long,
         openFailures: Long,
-        downlinkBytes: Long
+        downlinkBytes: Long,
+        successfulFlows: Long,
+        earlyCloseFlows: Long
     ): String {
         if (quicFallbackSignals == 0L) {
             return "pending-no-signal"
         }
-        if (openSuccesses > 0 && downlinkBytes > 0) {
+        if (openSuccesses > 0 &&
+            (successfulFlows > 0 || downlinkBytes >= YOUTUBE_VERDICT_DOWNLINK_BYTES_LIKELY_YES)
+        ) {
             return "likely-yes"
+        }
+        if (earlyCloseFlows >= YOUTUBE_VERDICT_MIN_EARLY_CLOSES &&
+            successfulFlows == 0L &&
+            downlinkBytes < YOUTUBE_VERDICT_DOWNLINK_BYTES_EARLY_CLOSE_CAP
+        ) {
+            return "likely-no-early-close"
         }
         if (openFailures >= YOUTUBE_VERDICT_MIN_FAILURES &&
             openSuccesses == 0L &&
@@ -483,6 +531,9 @@ class TunPacketLoop(
         private const val TRANSPORT_RECONNECT_INTERVAL_MS = 3_000L
         private const val SYN_RECONNECT_INTERVAL_MS = 800L
         private const val YOUTUBE_VERDICT_MIN_FAILURES = 6L
+        private const val YOUTUBE_VERDICT_MIN_EARLY_CLOSES = 3L
+        private const val YOUTUBE_VERDICT_DOWNLINK_BYTES_LIKELY_YES = 256 * 1024L
+        private const val YOUTUBE_VERDICT_DOWNLINK_BYTES_EARLY_CLOSE_CAP = 48 * 1024L
         private const val HTTPS_PORT = 443
         private const val IPV4_HEADER_BYTES = 20
         private const val UDP_HEADER_BYTES = 8
