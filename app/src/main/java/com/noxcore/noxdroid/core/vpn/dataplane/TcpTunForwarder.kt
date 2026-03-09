@@ -22,6 +22,7 @@ class TcpTunForwarder(
     )
 
     private val sessions = linkedMapOf<TcpSessionKey, ForwardSession>()
+    private val synRetryStates = linkedMapOf<TcpSessionKey, SynRetryState>()
     private val ipIdCounter = AtomicInteger(Random.nextInt(0, 0xFFFF))
 
     private var uplinkBytes = 0L
@@ -167,6 +168,7 @@ class TcpTunForwarder(
 
     fun expireIdle(nowMs: Long, idleMs: Long) {
         synchronized(sessions) {
+            expireSynRetryStates(nowMs)
             val iterator = sessions.entries.iterator()
             while (iterator.hasNext()) {
                 val session = iterator.next().value
@@ -245,8 +247,20 @@ class TcpTunForwarder(
             return true
         }
 
+        val nowMs = System.currentTimeMillis()
+        if (shouldDeferSynOpenAttempt(packet, nowMs)) {
+            transientOpenDeferrals += 1
+            val retryState = synRetryStates[key]
+            val backoffRemainingMs = ((retryState?.backoffUntilMs ?: nowMs) - nowMs).coerceAtLeast(0L)
+            DiagnosticsLog.info(
+                TAG,
+                "youtube-first deferring SYN open attempt target=${packet.destinationIp}:${packet.destinationPort} backoff_ms=$backoffRemainingMs"
+            )
+            return false
+        }
+
         val target = "${packet.destinationIp}:${packet.destinationPort}"
-        val openStartedAtMs = System.currentTimeMillis()
+        val openStartedAtMs = nowMs
         val openResult = transportClient.openStream(target)
         if (!openResult.ok) {
             connectFailures += 1
@@ -254,14 +268,15 @@ class TcpTunForwarder(
             val reason = openResult.error ?: "open failed"
             Log.w(TAG, "open stream failed for $target: $reason")
             DiagnosticsLog.warn(TAG, "open stream failed target=$target reason=$reason")
-            if (isTransientOpenFailure(reason)) {
+            if (shouldDeferSynResetAfterOpenFailure(packet, reason, nowMs)) {
                 transientOpenDeferrals += 1
                 DiagnosticsLog.warn(
                     TAG,
-                    "deferring SYN reset for transient open failure target=$target reason=$reason"
+                    "youtube-first deferring SYN reset target=$target reason=$reason"
                 )
                 return false
             }
+            synRetryStates.remove(key)
             sendRstForFailedOpen(packet)
             return false
         }
@@ -278,6 +293,7 @@ class TcpTunForwarder(
         )
 
         sessions[key] = session
+        synRetryStates.remove(key)
         DiagnosticsLog.info(
             TAG,
             "stream opened stream=${session.streamId} target=$target open_latency_ms=$openLatencyMs"
@@ -692,6 +708,74 @@ class TcpTunForwarder(
             normalized.contains("timeout")
     }
 
+    private fun shouldDeferSynOpenAttempt(packet: TcpPacketMeta, nowMs: Long): Boolean {
+        if (packet.destinationPort != HTTPS_PORT) {
+            return false
+        }
+        val state = synRetryStates[sessionKey(packet)] ?: return false
+        return nowMs < state.backoffUntilMs
+    }
+
+    private fun shouldDeferSynResetAfterOpenFailure(
+        packet: TcpPacketMeta,
+        reason: String,
+        nowMs: Long
+    ): Boolean {
+        if (packet.destinationPort != HTTPS_PORT) {
+            return isTransientOpenFailure(reason)
+        }
+        if (!isRetryableHttpsOpenFailure(reason)) {
+            return false
+        }
+        val key = sessionKey(packet)
+        val state = synRetryStates[key]
+        if (state == null) {
+            synRetryStates[key] = SynRetryState(
+                firstFailureAtMs = nowMs,
+                lastFailureAtMs = nowMs,
+                failureCount = 1,
+                backoffUntilMs = nowMs + synBackoffMs(1),
+                lastReason = reason
+            )
+            return true
+        }
+        state.failureCount += 1
+        state.lastFailureAtMs = nowMs
+        state.lastReason = reason
+        if (state.failureCount > HTTPS_SYN_MAX_DEFERRALS ||
+            nowMs - state.firstFailureAtMs > HTTPS_SYN_RETRY_WINDOW_MS
+        ) {
+            return false
+        }
+        state.backoffUntilMs = nowMs + synBackoffMs(state.failureCount)
+        return true
+    }
+
+    private fun expireSynRetryStates(nowMs: Long) {
+        val iterator = synRetryStates.entries.iterator()
+        while (iterator.hasNext()) {
+            val state = iterator.next().value
+            if (nowMs - state.lastFailureAtMs > HTTPS_SYN_RETRY_STATE_IDLE_MS) {
+                iterator.remove()
+            }
+        }
+    }
+
+    private fun isRetryableHttpsOpenFailure(reason: String): Boolean {
+        val normalized = reason.lowercase()
+        if (normalized.contains("auth") || normalized.contains("unauthorized")) {
+            return false
+        }
+        return true
+    }
+
+    private fun synBackoffMs(failureCount: Int): Long {
+        val clamped = failureCount.coerceAtLeast(1)
+        val shift = (clamped - 1).coerceAtMost(4)
+        val exponential = HTTPS_SYN_BASE_BACKOFF_MS shl shift
+        return minOf(exponential.toLong(), HTTPS_SYN_MAX_BACKOFF_MS)
+    }
+
     private data class ForwardSession(
         val key: TcpSessionKey,
         val streamId: Long,
@@ -709,6 +793,14 @@ class TcpTunForwarder(
         var outOfOrderBytes: Int = 0
     )
 
+    private data class SynRetryState(
+        val firstFailureAtMs: Long,
+        var lastFailureAtMs: Long,
+        var failureCount: Int,
+        var backoffUntilMs: Long,
+        var lastReason: String
+    )
+
     companion object {
         private const val TAG = "TcpTunForwarder"
         private const val TCP_PROTOCOL = 6
@@ -724,6 +816,12 @@ class TcpTunForwarder(
         private const val MAX_OUT_OF_ORDER_SEGMENTS = 64
         private const val MAX_OUT_OF_ORDER_BUFFER_BYTES = 256 * 1024
         private const val MAX_OUT_OF_ORDER_BYTES = 512 * 1024
+        private const val HTTPS_PORT = 443
+        private const val HTTPS_SYN_MAX_DEFERRALS = 5
+        private const val HTTPS_SYN_RETRY_WINDOW_MS = 20_000L
+        private const val HTTPS_SYN_BASE_BACKOFF_MS = 500
+        private const val HTTPS_SYN_MAX_BACKOFF_MS = 8_000L
+        private const val HTTPS_SYN_RETRY_STATE_IDLE_MS = 45_000L
 
         private const val FLAG_FIN = 0x01
         private const val FLAG_RST = 0x04
