@@ -23,6 +23,7 @@ class TcpTunForwarder(
 
     private val sessions = linkedMapOf<TcpSessionKey, ForwardSession>()
     private val synRetryStates = linkedMapOf<TcpSessionKey, SynRetryState>()
+    private val quicFallbackTargets = linkedMapOf<HttpsTargetKey, Long>()
     private val ipIdCounter = AtomicInteger(Random.nextInt(0, 0xFFFF))
 
     private var uplinkBytes = 0L
@@ -30,6 +31,15 @@ class TcpTunForwarder(
     private var droppedPackets = 0L
     private var connectFailures = 0L
     private var transientOpenDeferrals = 0L
+
+    fun noteUdp443Fallback(destinationIp: String, destinationPort: Int = HTTPS_PORT) {
+        if (destinationPort != HTTPS_PORT) {
+            return
+        }
+        synchronized(sessions) {
+            quicFallbackTargets[HttpsTargetKey(destinationIp, destinationPort)] = System.currentTimeMillis()
+        }
+    }
 
     fun handleClientPacket(packet: TcpPacketMeta): Boolean {
         synchronized(sessions) {
@@ -169,6 +179,7 @@ class TcpTunForwarder(
     fun expireIdle(nowMs: Long, idleMs: Long) {
         synchronized(sessions) {
             expireSynRetryStates(nowMs)
+            expireQuicFallbackTargets(nowMs)
             val iterator = sessions.entries.iterator()
             while (iterator.hasNext()) {
                 val session = iterator.next().value
@@ -250,7 +261,7 @@ class TcpTunForwarder(
         val nowMs = System.currentTimeMillis()
         if (shouldDeferSynOpenAttempt(packet, nowMs)) {
             transientOpenDeferrals += 1
-            val retryState = synRetryStates[key]
+            val retryState = synRetryStates[synRetryKey(packet)]
             val backoffRemainingMs = ((retryState?.backoffUntilMs ?: nowMs) - nowMs).coerceAtLeast(0L)
             DiagnosticsLog.info(
                 TAG,
@@ -276,7 +287,7 @@ class TcpTunForwarder(
                 )
                 return false
             }
-            synRetryStates.remove(key)
+            synRetryStates.remove(synRetryKey(packet))
             sendRstForFailedOpen(packet)
             return false
         }
@@ -293,7 +304,7 @@ class TcpTunForwarder(
         )
 
         sessions[key] = session
-        synRetryStates.remove(key)
+        synRetryStates.remove(synRetryKey(packet))
         DiagnosticsLog.info(
             TAG,
             "stream opened stream=${session.streamId} target=$target open_latency_ms=$openLatencyMs"
@@ -709,10 +720,10 @@ class TcpTunForwarder(
     }
 
     private fun shouldDeferSynOpenAttempt(packet: TcpPacketMeta, nowMs: Long): Boolean {
-        if (packet.destinationPort != HTTPS_PORT) {
+        if (!isYoutubeFallbackTcp443(packet, nowMs)) {
             return false
         }
-        val state = synRetryStates[sessionKey(packet)] ?: return false
+        val state = synRetryStates[synRetryKey(packet)] ?: return false
         return nowMs < state.backoffUntilMs
     }
 
@@ -721,13 +732,13 @@ class TcpTunForwarder(
         reason: String,
         nowMs: Long
     ): Boolean {
-        if (packet.destinationPort != HTTPS_PORT) {
+        if (!isYoutubeFallbackTcp443(packet, nowMs)) {
             return isTransientOpenFailure(reason)
         }
         if (!isRetryableHttpsOpenFailure(reason)) {
             return false
         }
-        val key = sessionKey(packet)
+        val key = synRetryKey(packet)
         val state = synRetryStates[key]
         if (state == null) {
             synRetryStates[key] = SynRetryState(
@@ -742,8 +753,8 @@ class TcpTunForwarder(
         state.failureCount += 1
         state.lastFailureAtMs = nowMs
         state.lastReason = reason
-        if (state.failureCount > HTTPS_SYN_MAX_DEFERRALS ||
-            nowMs - state.firstFailureAtMs > HTTPS_SYN_RETRY_WINDOW_MS
+        if (state.failureCount > YOUTUBE_HTTPS_SYN_MAX_DEFERRALS ||
+            nowMs - state.firstFailureAtMs > YOUTUBE_HTTPS_SYN_RETRY_WINDOW_MS
         ) {
             return false
         }
@@ -755,10 +766,44 @@ class TcpTunForwarder(
         val iterator = synRetryStates.entries.iterator()
         while (iterator.hasNext()) {
             val state = iterator.next().value
-            if (nowMs - state.lastFailureAtMs > HTTPS_SYN_RETRY_STATE_IDLE_MS) {
+            if (nowMs - state.lastFailureAtMs > YOUTUBE_HTTPS_SYN_RETRY_STATE_IDLE_MS) {
                 iterator.remove()
             }
         }
+    }
+
+    private fun expireQuicFallbackTargets(nowMs: Long) {
+        val iterator = quicFallbackTargets.entries.iterator()
+        while (iterator.hasNext()) {
+            val markedAtMs = iterator.next().value
+            if (nowMs - markedAtMs > QUIC_FALLBACK_TARGET_TTL_MS) {
+                iterator.remove()
+            }
+        }
+    }
+
+    private fun isYoutubeFallbackTcp443(packet: TcpPacketMeta, nowMs: Long): Boolean {
+        if (packet.destinationPort != HTTPS_PORT) {
+            return false
+        }
+        val markedAtMs = quicFallbackTargets[HttpsTargetKey(packet.destinationIp, packet.destinationPort)] ?: return false
+        if (nowMs - markedAtMs > QUIC_FALLBACK_TARGET_TTL_MS) {
+            quicFallbackTargets.remove(HttpsTargetKey(packet.destinationIp, packet.destinationPort))
+            return false
+        }
+        return true
+    }
+
+    private fun synRetryKey(packet: TcpPacketMeta): TcpSessionKey {
+        if (packet.destinationPort == HTTPS_PORT) {
+            return TcpSessionKey(
+                clientIp = SYN_RETRY_ANY_CLIENT,
+                clientPort = 0,
+                serverIp = packet.destinationIp,
+                serverPort = packet.destinationPort
+            )
+        }
+        return sessionKey(packet)
     }
 
     private fun isRetryableHttpsOpenFailure(reason: String): Boolean {
@@ -801,6 +846,11 @@ class TcpTunForwarder(
         var lastReason: String
     )
 
+    private data class HttpsTargetKey(
+        val destinationIp: String,
+        val destinationPort: Int
+    )
+
     companion object {
         private const val TAG = "TcpTunForwarder"
         private const val TCP_PROTOCOL = 6
@@ -817,11 +867,13 @@ class TcpTunForwarder(
         private const val MAX_OUT_OF_ORDER_BUFFER_BYTES = 256 * 1024
         private const val MAX_OUT_OF_ORDER_BYTES = 512 * 1024
         private const val HTTPS_PORT = 443
-        private const val HTTPS_SYN_MAX_DEFERRALS = 5
-        private const val HTTPS_SYN_RETRY_WINDOW_MS = 20_000L
+        private const val YOUTUBE_HTTPS_SYN_MAX_DEFERRALS = 8
+        private const val YOUTUBE_HTTPS_SYN_RETRY_WINDOW_MS = 40_000L
         private const val HTTPS_SYN_BASE_BACKOFF_MS = 500
         private const val HTTPS_SYN_MAX_BACKOFF_MS = 8_000L
-        private const val HTTPS_SYN_RETRY_STATE_IDLE_MS = 45_000L
+        private const val YOUTUBE_HTTPS_SYN_RETRY_STATE_IDLE_MS = 90_000L
+        private const val QUIC_FALLBACK_TARGET_TTL_MS = 120_000L
+        private const val SYN_RETRY_ANY_CLIENT = "*"
 
         private const val FLAG_FIN = 0x01
         private const val FLAG_RST = 0x04

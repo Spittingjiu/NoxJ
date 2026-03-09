@@ -168,6 +168,10 @@ class TunPacketLoop(
                                     }
                                 )
                                 if (sent) {
+                                    forwarder.noteUdp443Fallback(
+                                        destinationIp = parsed.meta.destinationIp,
+                                        destinationPort = parsed.meta.destinationPort
+                                    )
                                     quicFallbackSignals += 1
                                     lastSummary = "udp/443 fallback signaled: ${parsed.meta.summary}"
                                 } else {
